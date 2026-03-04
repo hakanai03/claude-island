@@ -468,12 +468,13 @@ struct NotchView: View {
         let currentIds = Set(sessions.map { $0.stableId })
         let newPendingIds = currentIds.subtracting(previousPendingIds)
 
-        // Filter out meta-tools (plan mode etc.) that don't need urgent peek/open
+        // Only act on sessions with actual permission requests (not waitingForInput etc.)
         let ignoredTools: Set<String> = ["EnterPlanMode", "ExitPlanMode"]
         let actionablePending = sessions.filter { session in
             guard newPendingIds.contains(session.stableId) else { return false }
-            guard let toolName = session.activePermission?.toolName else { return true }
-            return !ignoredTools.contains(toolName)
+            // Must have an active permission — skip waitingForInput and other non-permission states
+            guard let permission = session.activePermission else { return false }
+            return !ignoredTools.contains(permission.toolName)
         }
 
         if !actionablePending.isEmpty {

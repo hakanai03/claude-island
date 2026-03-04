@@ -254,7 +254,14 @@ class ClaudeSessionMonitor: ObservableObject {
 
     private func updateFromSessions(_ sessions: [SessionState]) {
         instances = sessions
-        pendingInstances = sessions.filter { $0.needsAttention }
+        // Only update pendingInstances when the set of pending IDs actually changes
+        // to prevent unnecessary SwiftUI onChange triggers from SubagentStop/PostToolUse etc.
+        let newPending = sessions.filter { $0.needsAttention }
+        let newIds = Set(newPending.map { $0.stableId })
+        let oldIds = Set(pendingInstances.map { $0.stableId })
+        if newIds != oldIds {
+            pendingInstances = newPending
+        }
     }
 
     // MARK: - History Loading (for UI)
