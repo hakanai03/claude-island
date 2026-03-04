@@ -529,26 +529,30 @@ struct NotchView: View {
 
         // Bounce the notch when a session newly enters waitingForInput state
         if !newWaitingIds.isEmpty {
-            // Get the sessions that just entered waitingForInput
-            let newlyWaitingSessions = waitingForInputSessions.filter { newWaitingIds.contains($0.stableId) }
+            let capturedNewWaitingIds = newWaitingIds
 
-            // Play notification sound if the session is not actively focused
-            if let soundName = AppSettings.notificationSound.soundName {
-                // Check if we should play sound (async check for tmux pane focus)
-                Task {
-                    let shouldPlaySound = await shouldPlayNotificationSound(for: newlyWaitingSessions)
-                    if shouldPlaySound {
-                        await MainActor.run {
-                            NSSound(named: soundName)?.play()
+            // Debounce: wait 1.5s and verify sessions are still waiting
+            // (SubagentStop/PostToolUse can cause transient waitingForInput)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+                let stillWaiting = sessionMonitor.instances.filter {
+                    $0.phase == .waitingForInput && capturedNewWaitingIds.contains($0.stableId)
+                }
+                guard !stillWaiting.isEmpty else { return }
+
+                // Play notification sound if the session is not actively focused
+                if let soundName = AppSettings.notificationSound.soundName {
+                    Task {
+                        let shouldPlaySound = await shouldPlayNotificationSound(for: stillWaiting)
+                        if shouldPlaySound {
+                            await MainActor.run {
+                                NSSound(named: soundName)?.play()
+                            }
                         }
                     }
                 }
-            }
 
-            // Trigger bounce animation to get user's attention
-            DispatchQueue.main.async {
+                // Trigger bounce animation to get user's attention
                 isBouncing = true
-                // Bounce back after a short delay
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     isBouncing = false
                 }
