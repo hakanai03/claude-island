@@ -70,7 +70,7 @@ class NotchViewModel: ObservableObject {
         switch contentType {
         case .peek:
             return CGSize(
-                width: min(screenRect.width * 0.35, 360),
+                width: min(screenRect.width * 0.4, 420),
                 height: 80
             )
         case .chat:

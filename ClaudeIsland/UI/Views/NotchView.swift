@@ -468,8 +468,16 @@ struct NotchView: View {
         let currentIds = Set(sessions.map { $0.stableId })
         let newPendingIds = currentIds.subtracting(previousPendingIds)
 
-        if !newPendingIds.isEmpty {
-            let firstNewPending = sessions.first { newPendingIds.contains($0.stableId) }
+        // Filter out meta-tools (plan mode etc.) that don't need urgent peek/open
+        let ignoredTools: Set<String> = ["EnterPlanMode", "ExitPlanMode"]
+        let actionablePending = sessions.filter { session in
+            guard newPendingIds.contains(session.stableId) else { return false }
+            guard let toolName = session.activePermission?.toolName else { return true }
+            return !ignoredTools.contains(toolName)
+        }
+
+        if !actionablePending.isEmpty {
+            let firstNewPending = actionablePending.first
             let terminalVisible = TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace()
 
             if viewModel.status == .closed && !terminalVisible {
@@ -572,27 +580,62 @@ struct NotchView: View {
             return preview.isEmpty ? name : "\(name)(\(preview))"
         }()
 
-        Button {
-            viewModel.showChat(for: session)
-        } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(Color.orange)
-                    .frame(width: 6, height: 6)
-                Text(toolName)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.8))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.white.opacity(0.3))
+        let hasAlways = session.activePermission?.hasAlwaysOption ?? false
+
+        HStack(spacing: 8) {
+            // Tool name (tap to expand to full chat)
+            Button {
+                viewModel.showChat(for: session)
+            } label: {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 6, height: 6)
+                    Text(toolName)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.8))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 4)
+
+            // Allow button
+            Button {
+                sessionMonitor.approvePermission(sessionId: session.sessionId)
+                viewModel.notchClose()
+            } label: {
+                Text("Allow")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color.white.opacity(0.9))
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+
+            // Always button (only when available)
+            if hasAlways {
+                Button {
+                    sessionMonitor.approvePermissionAlways(sessionId: session.sessionId)
+                    viewModel.notchClose()
+                } label: {
+                    Text("Always")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.2))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
 
     /// Determine if notification sound should play for the given sessions

@@ -525,6 +525,7 @@ struct ChatView: View {
                     // Deny
                     Button {
                         sessionMonitor.denyPermission(sessionId: pending.sessionId, reason: nil)
+                        viewModel.notchClose()
                     } label: {
                         Text("Deny")
                             .font(.system(size: 10, weight: .medium))
@@ -539,6 +540,7 @@ struct ChatView: View {
                     // Allow
                     Button {
                         sessionMonitor.approvePermission(sessionId: pending.sessionId)
+                        viewModel.notchClose()
                     } label: {
                         Text("Allow")
                             .font(.system(size: 10, weight: .medium))
@@ -569,6 +571,7 @@ struct ChatView: View {
             message: session.activePermission?.message,
             onApproveAlways: hasAlways ? {
                 sessionMonitor.approvePermissionAlways(sessionId: sessionId)
+                viewModel.notchClose()
             } : nil,
             onApprove: { approvePermission() },
             onDeny: { denyPermission() }
@@ -633,10 +636,12 @@ struct ChatView: View {
 
     private func approvePermission() {
         sessionMonitor.approvePermission(sessionId: sessionId)
+        viewModel.notchClose()
     }
 
     private func denyPermission() {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
+        viewModel.notchClose()
     }
 
     private func answerQuestion(_ answer: String) {
