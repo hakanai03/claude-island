@@ -132,18 +132,23 @@ struct ToolCallItem: Equatable, Sendable {
 
     /// Preview text for the tool (input-based)
     var inputPreview: String {
-        if let filePath = input["file_path"] ?? input["path"] {
+        // file_path is always specific (Read, Edit, Write)
+        if let filePath = input["file_path"] {
             return URL(fileURLWithPath: filePath).lastPathComponent
         }
         if let command = input["command"] {
             let firstLine = command.components(separatedBy: "\n").first ?? command
             return String(firstLine.prefix(60))
         }
+        // pattern/query before path — for Glob/Grep, pattern is more informative than path
         if let pattern = input["pattern"] {
             return pattern
         }
         if let query = input["query"] {
             return query
+        }
+        if let path = input["path"] {
+            return URL(fileURLWithPath: path).lastPathComponent
         }
         if let url = input["url"] {
             return url

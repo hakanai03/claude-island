@@ -29,6 +29,26 @@ struct NotchView: View {
 
     @Namespace private var activityNamespace
 
+    /// Whether any non-ended sessions exist (for persistent crab display)
+    private var hasAnySessions: Bool {
+        sessionMonitor.instances.contains { $0.phase != .ended }
+    }
+
+    /// Number of active sessions (for stacked crab display)
+    private var activeSessionCount: Int {
+        let active = sessionMonitor.instances.filter {
+            $0.phase != .idle && $0.phase != .ended
+        }
+        return max(active.count, sessionMonitor.instances.isEmpty ? 0 : 1)
+    }
+
+    /// Extra width needed for stacked crab icons
+    private var extraCrabWidth: CGFloat {
+        let count = min(activeSessionCount, 2)
+        guard count > 1 else { return 0 }
+        return CGFloat(count - 1) * (14 * 0.35)
+    }
+
     /// Whether any Claude session is currently processing or compacting
     private var isAnyProcessing: Bool {
         sessionMonitor.instances.contains { $0.phase == .processing || $0.phase == .compacting }
@@ -42,7 +62,7 @@ struct NotchView: View {
     /// Whether any Claude session is waiting for user input (done/ready state) within the display window
     private var hasWaitingForInput: Bool {
         let now = Date()
-        let displayDuration: TimeInterval = 30  // Show checkmark for 30 seconds
+        let displayDuration: TimeInterval = 10  // Show checkmark for 10 seconds
 
         return sessionMonitor.instances.contains { session in
             guard session.phase == .waitingForInput else { return false }
@@ -73,7 +93,7 @@ struct NotchView: View {
             switch activityCoordinator.expandingActivity.type {
             case .claude:
                 let baseWidth = 2 * max(0, closedNotchSize.height - 12) + 20
-                return baseWidth + permissionIndicatorWidth
+                return baseWidth + permissionIndicatorWidth + extraCrabWidth
             case .none:
                 break
             }
@@ -81,12 +101,17 @@ struct NotchView: View {
 
         // Expand for pending permissions (left indicator) or waiting for input (checkmark on right)
         if hasPendingPermission {
-            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth
+            return 2 * max(0, closedNotchSize.height - 12) + 20 + permissionIndicatorWidth + extraCrabWidth
         }
 
         // Waiting for input just shows checkmark on right, no extra left indicator
         if hasWaitingForInput {
-            return 2 * max(0, closedNotchSize.height - 12) + 20
+            return 2 * max(0, closedNotchSize.height - 12) + 20 + extraCrabWidth
+        }
+
+        // Sessions exist but idle: crab on left, idle indicator on right
+        if hasAnySessions {
+            return 2 * max(0, closedNotchSize.height - 12) + 20 + extraCrabWidth
         }
 
         return 0
@@ -205,6 +230,9 @@ struct NotchView: View {
             handleProcessingChange()
             handleWaitingForInputChange(instances)
         }
+        .onChange(of: expansionWidth) { _, newWidth in
+            viewModel.closedExpansionWidth = newWidth
+        }
     }
 
     // MARK: - Notch Layout
@@ -243,14 +271,19 @@ struct NotchView: View {
 
     // MARK: - Header Row (persists across states)
 
+    /// Whether to show the crab icon in the closed header (sessions exist OR activity showing)
+    private var showCrab: Bool {
+        showClosedActivity || (viewModel.status != .opened && hasAnySessions)
+    }
+
     @ViewBuilder
     private var headerRow: some View {
         HStack(spacing: 0) {
-            // Left side - crab + optional permission indicator (visible when processing, pending, or waiting for input)
-            if showClosedActivity {
+            // Left side - crab (persistent when sessions exist) + optional permission indicator
+            if showCrab {
                 HStack(spacing: 4) {
-                    ClaudeCrabIcon(size: 14, animateLegs: isProcessing)
-                        .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showClosedActivity)
+                    StackedCrabIcons(count: activeSessionCount, size: 14, animateLegs: isProcessing)
+                        .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: showCrab)
 
                     // Permission indicator only (amber) - waiting for input shows checkmark on right
                     if hasPendingPermission {
@@ -266,20 +299,20 @@ struct NotchView: View {
             if viewModel.status == .opened {
                 // Opened: show header content
                 openedHeaderContent
-            } else if !showClosedActivity {
-                // Closed without activity: empty space
+            } else if !showCrab {
+                // Closed without any sessions: empty space
                 Rectangle()
                     .fill(.clear)
                     .frame(width: closedNotchSize.width - 20)
             } else {
-                // Closed with activity: black spacer (with optional bounce)
+                // Closed with crab (with or without activity): black spacer
                 Rectangle()
                     .fill(.black)
                     .frame(width: closedNotchSize.width - cornerRadiusInsets.closed.top + (isBouncing ? 16 : 0))
             }
 
-            // Right side - spinner when processing/pending, checkmark when waiting for input
-            if showClosedActivity {
+            // Right side - spinner when processing/pending, checkmark when waiting, idle icon otherwise
+            if showCrab {
                 if isProcessing || hasPendingPermission {
                     ProcessingSpinner()
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
@@ -288,6 +321,13 @@ struct NotchView: View {
                     // Checkmark for waiting-for-input on the right side
                     ReadyForInputIndicatorIcon(size: 14, color: TerminalColors.green)
                         .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showClosedActivity)
+                        .frame(width: viewModel.status == .opened ? 20 : sideWidth)
+                } else {
+                    // Idle dot - Claude color
+                    Circle()
+                        .fill(TerminalColors.prompt.opacity(0.6))
+                        .frame(width: 6, height: 6)
+                        .matchedGeometryEffect(id: "spinner", in: activityNamespace, isSource: showCrab)
                         .frame(width: viewModel.status == .opened ? 20 : sideWidth)
                 }
             }
@@ -304,11 +344,11 @@ struct NotchView: View {
     @ViewBuilder
     private var openedHeaderContent: some View {
         HStack(spacing: 12) {
-            // Show static crab only if not showing activity in headerRow
-            // (headerRow handles crab + indicator when showClosedActivity is true)
-            if !showClosedActivity {
-                ClaudeCrabIcon(size: 14)
-                    .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: !showClosedActivity)
+            // Show static crab only if not showing it in headerRow
+            // (headerRow handles crab when showCrab is true)
+            if !showCrab {
+                StackedCrabIcons(count: activeSessionCount, size: 14)
+                    .matchedGeometryEffect(id: "crab", in: activityNamespace, isSource: !showCrab)
                     .padding(.leading, 8)
             }
 
@@ -363,6 +403,8 @@ struct NotchView: View {
                     sessionMonitor: sessionMonitor,
                     viewModel: viewModel
                 )
+            case .peek(let session):
+                peekContentView(session: session)
             }
         }
         .frame(width: notchSize.width - 24) // Fixed width to prevent text reflow
@@ -386,9 +428,10 @@ struct NotchView: View {
 
             // Delay hiding the notch until animation completes
             // Don't hide on non-notched devices - users need a visible target
-            if viewModel.status == .closed && viewModel.hasPhysicalNotch {
+            // Don't hide while sessions exist - keep crab visible
+            if viewModel.status == .closed && viewModel.hasPhysicalNotch && !hasAnySessions {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    if !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && viewModel.status == .closed {
+                    if !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && !hasAnySessions && viewModel.status == .closed {
                         isVisible = false
                     }
                 }
@@ -404,11 +447,17 @@ struct NotchView: View {
             if viewModel.openReason == .click || viewModel.openReason == .hover {
                 waitingForInputTimestamps.removeAll()
             }
+            // Auto-navigate to first pending permission session's chat
+            if let firstPending = sessionMonitor.pendingInstances.first {
+                viewModel.showChat(for: firstPending)
+            }
         case .closed:
             // Don't hide on non-notched devices - users need a visible target
             guard viewModel.hasPhysicalNotch else { return }
+            // Don't hide while sessions exist - keep crab visible
+            guard !hasAnySessions else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                if viewModel.status == .closed && !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && !activityCoordinator.expandingActivity.show {
+                if viewModel.status == .closed && !isAnyProcessing && !hasPendingPermission && !hasWaitingForInput && !hasAnySessions && !activityCoordinator.expandingActivity.show {
                     isVisible = false
                 }
             }
@@ -419,10 +468,33 @@ struct NotchView: View {
         let currentIds = Set(sessions.map { $0.stableId })
         let newPendingIds = currentIds.subtracting(previousPendingIds)
 
-        if !newPendingIds.isEmpty &&
-           viewModel.status == .closed &&
-           !TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace() {
-            viewModel.notchOpen(reason: .notification)
+        if !newPendingIds.isEmpty {
+            let firstNewPending = sessions.first { newPendingIds.contains($0.stableId) }
+            let terminalVisible = TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace()
+
+            if viewModel.status == .closed && !terminalVisible {
+                viewModel.notchOpen(reason: .notification)
+                // handleStatusChange will auto-navigate via pendingInstances
+            } else if viewModel.status == .closed && terminalVisible, let pending = firstNewPending {
+                // Terminal visible — show compact peek instead of full open
+                viewModel.startPeek(for: pending)
+            } else if viewModel.status == .opened, let pending = firstNewPending {
+                // Already open — navigate to the new pending session
+                viewModel.showChat(for: pending)
+            }
+
+            // Play permission sound for newly pending sessions
+            let newlyPendingSessions = sessions.filter { newPendingIds.contains($0.stableId) }
+            if let soundName = AppSettings.permissionSound.soundName {
+                Task {
+                    let shouldPlay = await shouldPlayNotificationSound(for: newlyPendingSessions)
+                    if shouldPlay {
+                        await MainActor.run {
+                            NSSound(named: soundName)?.play()
+                        }
+                    }
+                }
+            }
         }
 
         previousPendingIds = currentIds
@@ -473,14 +545,54 @@ struct NotchView: View {
                 }
             }
 
-            // Schedule hiding the checkmark after 30 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [self] in
+            // Schedule hiding the checkmark after 10 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [self] in
                 // Trigger a UI update to re-evaluate hasWaitingForInput
                 handleProcessingChange()
             }
         }
 
         previousWaitingForInputIds = currentIds
+    }
+
+    // MARK: - Peek Content View
+
+    @ViewBuilder
+    private func peekContentView(session: SessionState) -> some View {
+        let toolName: String = {
+            guard let lastTool = ChatHistoryManager.shared.history(for: session.sessionId)
+                .compactMap({ item -> ToolCallItem? in
+                    if case .toolCall(let tool) = item.type { return tool }
+                    return nil
+                })
+                .last(where: { $0.status == .waitingForApproval })
+            else { return "Permission required" }
+            let name = MCPToolFormatter.formatToolName(lastTool.name)
+            let preview = lastTool.inputPreview
+            return preview.isEmpty ? name : "\(name)(\(preview))"
+        }()
+
+        Button {
+            viewModel.showChat(for: session)
+        } label: {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 6, height: 6)
+                Text(toolName)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
     }
 
     /// Determine if notification sound should play for the given sessions

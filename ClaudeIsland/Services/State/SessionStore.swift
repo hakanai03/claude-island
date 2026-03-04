@@ -127,6 +127,19 @@ actor SessionStore {
         if let tty = event.tty {
             session.tty = tty.replacingOccurrences(of: "/dev/", with: "")
         }
+        if let transcriptPath = event.transcriptPath {
+            session.transcriptPath = transcriptPath
+            // Fire-and-forget: avoid await here to prevent actor reentrancy.
+            // If processHookEvent yields, a concurrent PermissionRequest can set
+            // waitingForApproval, but this PreToolUse would resume with a stale
+            // local session copy and overwrite the phase back to processing.
+            let sid = sessionId
+            Task {
+                await ConversationParser.shared.registerTranscriptPath(
+                    sessionId: sid, path: transcriptPath
+                )
+            }
+        }
         session.lastActivity = Date()
 
         if event.status == "ended" {
@@ -171,6 +184,7 @@ actor SessionStore {
             pid: event.pid,
             tty: event.tty?.replacingOccurrences(of: "/dev/", with: ""),
             isInTmux: false,  // Will be updated
+            transcriptPath: event.transcriptPath,
             phase: .idle
         )
     }
@@ -322,8 +336,10 @@ actor SessionStore {
             let newPhase = SessionPhase.waitingForApproval(PermissionContext(
                 toolUseId: nextPending.id,
                 toolName: nextPending.name,
-                toolInput: nil,  // We don't have the input stored in chatItems
-                receivedAt: nextPending.timestamp
+                toolInput: nil,
+                message: nil,
+                receivedAt: nextPending.timestamp,
+                hasAlwaysOption: false
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
@@ -387,7 +403,9 @@ actor SessionStore {
                     toolUseId: nextPending.id,
                     toolName: nextPending.name,
                     toolInput: nil,
-                    receivedAt: nextPending.timestamp
+                    message: nil,
+                    receivedAt: nextPending.timestamp,
+                    hasAlwaysOption: false
                 ))
                 session.phase = newPhase
                 Self.logger.debug("Switched to next pending tool after completion: \(nextPending.id.prefix(12), privacy: .public)")
@@ -425,7 +443,9 @@ actor SessionStore {
                 toolUseId: nextPending.id,
                 toolName: nextPending.name,
                 toolInput: nil,
-                receivedAt: nextPending.timestamp
+                message: nil,
+                receivedAt: nextPending.timestamp,
+                hasAlwaysOption: false
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
@@ -461,7 +481,9 @@ actor SessionStore {
                 toolUseId: nextPending.id,
                 toolName: nextPending.name,
                 toolInput: nil,
-                receivedAt: nextPending.timestamp
+                message: nil,
+                receivedAt: nextPending.timestamp,
+                hasAlwaysOption: false
             ))
             if session.phase.canTransition(to: newPhase) {
                 session.phase = newPhase
@@ -653,7 +675,8 @@ actor SessionStore {
 
             let subagentToolInfos = await ConversationParser.shared.parseSubagentTools(
                 agentId: taskResult.agentId,
-                cwd: cwd
+                cwd: cwd,
+                sessionId: session.sessionId
             )
 
             guard !subagentToolInfos.isEmpty else { continue }
@@ -686,8 +709,20 @@ actor SessionStore {
         toolResults: [String: ConversationParser.ToolResult],
         structuredResults: [String: ToolResultData]
     ) async {
+        // Get the active permission's tool ID so we can skip it —
+        // permission lifecycle is managed by approve/deny/socketFailure events, not JSONL detection
+        let activePermissionToolId: String?
+        if case .waitingForApproval(let ctx) = session.phase {
+            activePermissionToolId = ctx.toolUseId
+        } else {
+            activePermissionToolId = nil
+        }
+
         for item in session.chatItems {
             guard case .toolCall(let tool) = item.type else { continue }
+
+            // Skip the active permission tool — its completion is handled by the permission system
+            if item.id == activePermissionToolId { continue }
 
             // Only emit for tools that are running or waiting but have results in JSONL
             guard tool.status == .running || tool.status == .waitingForApproval else { continue }
@@ -793,6 +828,14 @@ actor SessionStore {
 
     private func processInterrupt(sessionId: String) async {
         guard var session = sessions[sessionId] else { return }
+
+        // Don't clear permission state on interrupt — the interrupt may be stale
+        // (from a previous turn's cleanup writes arriving late via JSONL buffering).
+        // The permission socket will handle cleanup if the tool was truly interrupted.
+        if case .waitingForApproval = session.phase {
+            Self.logger.info("Ignoring interrupt for session \(sessionId.prefix(8), privacy: .public) — permission pending (socket will handle cleanup)")
+            return
+        }
 
         // Clear subagent state
         session.subagentState = SubagentState()

@@ -38,6 +38,7 @@ enum AppSettings {
 
     private enum Keys {
         static let notificationSound = "notificationSound"
+        static let permissionSound = "permissionSound"
     }
 
     // MARK: - Notification Sound
@@ -53,6 +54,20 @@ enum AppSettings {
         }
         set {
             defaults.set(newValue.rawValue, forKey: Keys.notificationSound)
+        }
+    }
+
+    /// The sound to play when a permission request or question needs attention
+    static var permissionSound: NotificationSound {
+        get {
+            guard let rawValue = defaults.string(forKey: Keys.permissionSound),
+                  let sound = NotificationSound(rawValue: rawValue) else {
+                return .pop // Default to Pop
+            }
+            return sound
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: Keys.permissionSound)
         }
     }
 }

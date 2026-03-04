@@ -134,13 +134,40 @@ extension HookEvent {
             return .compacting
         }
 
-        // Permission request creates waitingForApproval state
+        // Permission request creates waitingForApproval state (socket-based)
         if expectsResponse, let tool = tool {
             return .waitingForApproval(PermissionContext(
                 toolUseId: toolUseId ?? "",
                 toolName: tool,
                 toolInput: toolInput,
-                receivedAt: Date()
+                message: nil,
+                receivedAt: Date(),
+                hasAlwaysOption: hasPermissionSuggestions ?? false
+            ))
+        }
+
+        // Notification-based permission prompt (team mode: forwarded from teammate)
+        // No socket response possible — approval handled via TTY keystrokes
+        if event == "Notification" && notificationType == "permission_prompt"
+            && status == "waiting_for_approval" {
+            // Parse tool name from message (e.g. "Claude needs your permission to use Bash")
+            let parsedToolName: String? = {
+                guard let msg = message else { return nil }
+                if let range = msg.range(of: "to use ") {
+                    let after = msg[range.upperBound...]
+                    let name = after.prefix(while: { !$0.isWhitespace && !$0.isNewline })
+                    return name.isEmpty ? nil : String(name)
+                }
+                return nil
+            }()
+            let toolName = tool ?? parsedToolName ?? "Permission"
+            return .waitingForApproval(PermissionContext(
+                toolUseId: "notification-\(UUID().uuidString)",
+                toolName: toolName,
+                toolInput: toolInput,
+                message: message,
+                receivedAt: Date(),
+                hasAlwaysOption: true
             ))
         }
 

@@ -25,6 +25,8 @@ struct HookEvent: Codable, Sendable {
     let toolUseId: String?
     let notificationType: String?
     let message: String?
+    let transcriptPath: String?
+    let hasPermissionSuggestions: Bool?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -33,10 +35,12 @@ struct HookEvent: Codable, Sendable {
         case toolUseId = "tool_use_id"
         case notificationType = "notification_type"
         case message
+        case transcriptPath = "transcript_path"
+        case hasPermissionSuggestions = "has_permission_suggestions"
     }
 
     /// Create a copy with updated toolUseId
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, transcriptPath: String? = nil, hasPermissionSuggestions: Bool? = nil) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -48,6 +52,8 @@ struct HookEvent: Codable, Sendable {
         self.toolUseId = toolUseId
         self.notificationType = notificationType
         self.message = message
+        self.transcriptPath = transcriptPath
+        self.hasPermissionSuggestions = hasPermissionSuggestions
     }
 
     var sessionPhase: SessionPhase {
@@ -63,7 +69,9 @@ struct HookEvent: Codable, Sendable {
                 toolUseId: toolUseId ?? "",
                 toolName: tool ?? "unknown",
                 toolInput: toolInput,
-                receivedAt: Date()
+                message: nil,
+                receivedAt: Date(),
+                hasAlwaysOption: hasPermissionSuggestions ?? false
             ))
         case "waiting_for_input":
             return .waitingForInput
@@ -447,7 +455,9 @@ class HookSocketServer {
                 toolInput: event.toolInput,
                 toolUseId: toolUseId,  // Use resolved toolUseId
                 notificationType: event.notificationType,
-                message: event.message
+                message: event.message,
+                transcriptPath: event.transcriptPath,
+                hasPermissionSuggestions: event.hasPermissionSuggestions
             )
 
             let pending = PendingPermission(

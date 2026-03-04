@@ -27,12 +27,14 @@ enum NotchContentType: Equatable {
     case instances
     case menu
     case chat(SessionState)
+    case peek(SessionState)
 
     var id: String {
         switch self {
         case .instances: return "instances"
         case .menu: return "menu"
         case .chat(let session): return "chat-\(session.sessionId)"
+        case .peek(let session): return "peek-\(session.sessionId)"
         }
     }
 }
@@ -45,11 +47,13 @@ class NotchViewModel: ObservableObject {
     @Published var openReason: NotchOpenReason = .unknown
     @Published var contentType: NotchContentType = .instances
     @Published var isHovering: Bool = false
+    @Published var closedExpansionWidth: CGFloat = 0
 
     // MARK: - Dependencies
 
     private let screenSelector = ScreenSelector.shared
-    private let soundSelector = SoundSelector.shared
+    let doneSoundSelector = SoundSelector()
+    let permissionSoundSelector = SoundSelector()
 
     // MARK: - Geometry
 
@@ -64,6 +68,11 @@ class NotchViewModel: ObservableObject {
     /// Dynamic opened size based on content type
     var openedSize: CGSize {
         switch contentType {
+        case .peek:
+            return CGSize(
+                width: min(screenRect.width * 0.35, 360),
+                height: 80
+            )
         case .chat:
             // Large size for chat view
             return CGSize(
@@ -74,7 +83,7 @@ class NotchViewModel: ObservableObject {
             // Compact size for settings menu
             return CGSize(
                 width: min(screenRect.width * 0.4, 480),
-                height: 420 + screenSelector.expandedPickerHeight + soundSelector.expandedPickerHeight
+                height: 420 + screenSelector.expandedPickerHeight + doneSoundSelector.expandedPickerHeight + permissionSoundSelector.expandedPickerHeight
             )
         case .instances:
             return CGSize(
@@ -95,6 +104,7 @@ class NotchViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let events = EventMonitors.shared
     private var hoverTimer: DispatchWorkItem?
+    private var peekTimer: DispatchWorkItem?
 
     // MARK: - Initialization
 
@@ -114,7 +124,11 @@ class NotchViewModel: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        soundSelector.$isPickerExpanded
+        doneSoundSelector.$isPickerExpanded
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        permissionSoundSelector.$isPickerExpanded
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
     }
@@ -139,15 +153,31 @@ class NotchViewModel: ObservableObject {
 
     /// Whether we're in chat mode (sticky behavior)
     private var isInChatMode: Bool {
-        if case .chat = contentType { return true }
-        return false
+        switch contentType {
+        case .chat, .peek: return true
+        default: return false
+        }
     }
 
     /// The chat session we're viewing (persists across close/open)
     private var currentChatSession: SessionState?
 
+    /// Check if a point is in the expanded closed activity area
+    private func isPointInClosedExpansion(_ point: CGPoint) -> Bool {
+        guard closedExpansionWidth > 0 else { return false }
+        let notchRect = geometry.notchScreenRect
+        let totalWidth = notchRect.width + closedExpansionWidth
+        let expandedRect = CGRect(
+            x: notchRect.midX - totalWidth / 2,
+            y: notchRect.minY,
+            width: totalWidth,
+            height: notchRect.height
+        ).insetBy(dx: -10, dy: -5)
+        return expandedRect.contains(point)
+    }
+
     private func handleMouseMove(_ location: CGPoint) {
-        let inNotch = geometry.isPointInNotch(location)
+        let inNotch = geometry.isPointInNotch(location) || isPointInClosedExpansion(location)
         let inOpened = status == .opened && geometry.isPointInOpenedPanel(location, size: openedSize)
 
         let newHovering = inNotch || inOpened
@@ -181,6 +211,11 @@ class NotchViewModel: ObservableObject {
                 notchClose()
                 // Re-post the click so it reaches the window/app behind us
                 repostClickAt(location)
+            } else if case .peek(let session) = contentType {
+                // Clicking inside peek → expand to full chat
+                peekTimer?.cancel()
+                peekTimer = nil
+                contentType = .chat(session)
             } else if geometry.notchScreenRect.contains(location) {
                 // Clicking notch while opened - only close if NOT in chat mode
                 if !isInChatMode {
@@ -188,7 +223,7 @@ class NotchViewModel: ObservableObject {
                 }
             }
         case .closed, .popping:
-            if geometry.isPointInNotch(location) {
+            if geometry.isPointInNotch(location) || isPointInClosedExpansion(location) {
                 notchOpen(reason: .click)
             }
         }
@@ -228,6 +263,10 @@ class NotchViewModel: ObservableObject {
     // MARK: - Actions
 
     func notchOpen(reason: NotchOpenReason = .unknown) {
+        // Cancel peek if we're doing a full open
+        peekTimer?.cancel()
+        peekTimer = nil
+
         openReason = reason
         status = .opened
 
@@ -248,6 +287,8 @@ class NotchViewModel: ObservableObject {
     }
 
     func notchClose() {
+        peekTimer?.cancel()
+        peekTimer = nil
         // Save chat session before closing if in chat mode
         if case .chat(let session) = contentType {
             currentChatSession = session
@@ -268,6 +309,23 @@ class NotchViewModel: ObservableObject {
 
     func toggleMenu() {
         contentType = contentType == .menu ? .instances : .menu
+    }
+
+    func startPeek(for session: SessionState) {
+        guard status == .closed || status == .popping else { return }
+        peekTimer?.cancel()
+        contentType = .peek(session)
+        status = .opened
+        openReason = .notification
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            if case .peek = self.contentType {
+                self.notchClose()
+            }
+        }
+        peekTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
 
     func showChat(for session: SessionState) {

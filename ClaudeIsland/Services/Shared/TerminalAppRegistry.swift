@@ -31,7 +31,8 @@ struct TerminalAppRegistry: Sendable {
         "Code - Insiders",
         "Cursor",
         "Windsurf",
-        "zed"
+        "zed",
+        "cmux"
     ]
 
     /// Bundle identifiers for terminal apps (for window enumeration)

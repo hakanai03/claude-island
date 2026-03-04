@@ -62,14 +62,16 @@ class NotchViewController: NSViewController {
                     height: panelHeight
                 )
             case .closed, .popping:
-                // When closed, use the notch rect
+                // When closed, use the notch rect + expansion width for activity bar
                 let notchRect = geometry.deviceNotchRect
                 let screenWidth = geometry.screenRect.width
+                let expansionWidth = vm.closedExpansionWidth
+                let totalWidth = notchRect.width + expansionWidth
                 // Add some padding for easier interaction
                 return CGRect(
-                    x: (screenWidth - notchRect.width) / 2 - 10,
+                    x: (screenWidth - totalWidth) / 2 - 10,
                     y: windowHeight - notchRect.height - 5,
-                    width: notchRect.width + 20,
+                    width: totalWidth + 20,
                     height: notchRect.height + 10
                 )
             }

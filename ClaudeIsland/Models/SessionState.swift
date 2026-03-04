@@ -22,6 +22,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
     var pid: Int?
     var tty: String?
     var isInTmux: Bool
+    var transcriptPath: String?
 
     // MARK: - State Machine
 
@@ -71,13 +72,15 @@ struct SessionState: Equatable, Identifiable, Sendable {
         pid: Int? = nil,
         tty: String? = nil,
         isInTmux: Bool = false,
+        transcriptPath: String? = nil,
         phase: SessionPhase = .idle,
         chatItems: [ChatHistoryItem] = [],
         toolTracker: ToolTracker = ToolTracker(),
         subagentState: SubagentState = SubagentState(),
         conversationInfo: ConversationInfo = ConversationInfo(
             summary: nil, lastMessage: nil, lastMessageRole: nil,
-            lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil
+            lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil,
+            isSubagent: false, teammateName: nil
         ),
         needsClearReconciliation: Bool = false,
         lastActivity: Date = Date(),
@@ -89,6 +92,7 @@ struct SessionState: Equatable, Identifiable, Sendable {
         self.pid = pid
         self.tty = tty
         self.isInTmux = isInTmux
+        self.transcriptPath = transcriptPath
         self.phase = phase
         self.chatItems = chatItems
         self.toolTracker = toolTracker
@@ -124,9 +128,30 @@ struct SessionState: Equatable, Identifiable, Sendable {
         return sessionId
     }
 
-    /// Display title: summary > first user message > project name
+    /// Whether this session is a teammate/subagent
+    var isSubagent: Bool {
+        conversationInfo.isSubagent
+    }
+
+    /// Extracted teammate name (e.g. "team-lead", "researcher")
+    var teammateName: String? {
+        conversationInfo.teammateName
+    }
+
+    /// Home directory path (cached for thread safety)
+    private static let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+
+    /// Project name that shows "New session" for home directory
+    var friendlyProjectName: String {
+        cwd == Self.homeDirectory ? "New session" : projectName
+    }
+
+    /// Display title: teammate name for subagents, otherwise summary > first user message > project name
     var displayTitle: String {
-        conversationInfo.summary ?? conversationInfo.firstUserMessage ?? projectName
+        if let name = teammateName {
+            return name
+        }
+        return conversationInfo.summary ?? conversationInfo.firstUserMessage ?? friendlyProjectName
     }
 
     /// Best hint for matching window title

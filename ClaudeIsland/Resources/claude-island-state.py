@@ -11,6 +11,18 @@ import sys
 
 SOCKET_PATH = "/tmp/claude-island.sock"
 TIMEOUT_SECONDS = 300  # 5 minutes for permission decisions
+DEBUG_LOG = "/tmp/claude-island-hook-debug.log"
+
+
+def debug_log(msg):
+    """Write debug message to log file"""
+    import datetime
+    try:
+        with open(DEBUG_LOG, "a") as f:
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            f.write(f"[{ts}] {msg}\n")
+    except Exception:
+        pass
 
 
 def get_tty():
@@ -49,7 +61,7 @@ def get_tty():
     return None
 
 
-def send_event(state):
+def send_event(state, wait_for_response=False):
     """Send event to app, return response if any"""
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -57,8 +69,8 @@ def send_event(state):
         sock.connect(SOCKET_PATH)
         sock.sendall(json.dumps(state).encode())
 
-        # For permission requests, wait for response
-        if state.get("status") == "waiting_for_approval":
+        # Only wait for response on actual PermissionRequest events (socket-based approval)
+        if wait_for_response:
             response = sock.recv(4096)
             sock.close()
             if response:
@@ -82,6 +94,14 @@ def main():
     cwd = data.get("cwd", "")
     tool_input = data.get("tool_input", {})
 
+    # Debug: log ALL events to help diagnose team permission issues
+    debug_log(f"EVENT: {event} session={session_id[:8]} keys={list(data.keys())}")
+    if event == "Notification":
+        debug_log(f"  notification_type={data.get('notification_type')} message={str(data.get('message', ''))[:200]}")
+        debug_log(f"  tool_name={data.get('tool_name')} tool_input={str(data.get('tool_input', ''))[:200]}")
+    elif event == "PermissionRequest":
+        debug_log(f"  tool={data.get('tool_name')} tool_input={str(tool_input)[:200]}")
+
     # Get process info
     claude_pid = os.getppid()
     tty = get_tty()
@@ -93,6 +113,7 @@ def main():
         "event": event,
         "pid": claude_pid,
         "tty": tty,
+        "transcript_path": data.get("transcript_path"),
     }
 
     # Map events to status
@@ -124,9 +145,12 @@ def main():
         state["tool"] = data.get("tool_name")
         state["tool_input"] = tool_input
         # tool_use_id lookup handled by Swift-side cache from PreToolUse
+        # Pass whether "always allow" suggestions are available
+        suggestions = data.get("permission_suggestions", [])
+        state["has_permission_suggestions"] = bool(suggestions)
 
-        # Send to app and wait for decision
-        response = send_event(state)
+        # Send to app and wait for decision (socket-based approval)
+        response = send_event(state, wait_for_response=True)
 
         if response:
             decision = response.get("decision", "ask")
@@ -162,9 +186,12 @@ def main():
 
     elif event == "Notification":
         notification_type = data.get("notification_type")
-        # Skip permission_prompt - PermissionRequest hook handles this with better info
         if notification_type == "permission_prompt":
-            sys.exit(0)
+            # Team mode: leader receives forwarded permission prompt from teammate
+            # Send as waiting_for_approval so ClaudeIsland can show approval UI
+            state["status"] = "waiting_for_approval"
+            state["tool"] = data.get("tool_name")
+            state["tool_input"] = data.get("tool_input", {})
         elif notification_type == "idle_prompt":
             state["status"] = "waiting_for_input"
         else:

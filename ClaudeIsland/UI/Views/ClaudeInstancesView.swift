@@ -12,6 +12,8 @@ struct ClaudeInstancesView: View {
     @ObservedObject var sessionMonitor: ClaudeSessionMonitor
     @ObservedObject var viewModel: NotchViewModel
 
+    @State private var collapsedGroups: Set<String> = []
+
     var body: some View {
         if sessionMonitor.instances.isEmpty {
             emptyState
@@ -65,24 +67,109 @@ struct ClaudeInstancesView: View {
         }
     }
 
+    /// Group subagents under their parent (same cwd)
+    private var groupedInstances: [(parent: SessionState, children: [SessionState])] {
+        let sorted = sortedInstances
+        let parents = sorted.filter { !$0.isSubagent }
+        let subagents = sorted.filter { $0.isSubagent }
+
+        var result: [(parent: SessionState, children: [SessionState])] = []
+        var assignedSubagentIds: Set<String> = []
+
+        for parent in parents {
+            let children = subagents.filter { $0.cwd == parent.cwd && !assignedSubagentIds.contains($0.sessionId) }
+            for child in children {
+                assignedSubagentIds.insert(child.sessionId)
+            }
+            result.append((parent: parent, children: children))
+        }
+
+        // Orphan subagents (no parent found) - show as standalone
+        let orphans = subagents.filter { !assignedSubagentIds.contains($0.sessionId) }
+        for orphan in orphans {
+            result.append((parent: orphan, children: []))
+        }
+
+        return result
+    }
+
     private var instancesList: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 2) {
-                ForEach(sortedInstances) { session in
-                    InstanceRow(
-                        session: session,
-                        onFocus: { focusSession(session) },
-                        onChat: { openChat(session) },
-                        onArchive: { archiveSession(session) },
-                        onApprove: { approveSession(session) },
-                        onReject: { rejectSession(session) }
-                    )
-                    .id(session.stableId)
+                ForEach(groupedInstances, id: \.parent.stableId) { group in
+                    // Parent row
+                    HStack(spacing: 0) {
+                        // Fold/expand toggle for groups with children
+                        if !group.children.isEmpty {
+                            Button {
+                                withAnimation(Animation.spring(response: 0.25, dampingFraction: 0.8)) {
+                                    toggleCollapse(group.parent.stableId)
+                                }
+                            } label: {
+                                Image(systemName: collapsedGroups.contains(group.parent.stableId) ? "chevron.right" : "chevron.down")
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.3))
+                                    .frame(width: 16, height: 16)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        InstanceRow(
+                            session: group.parent,
+                            onFocus: { focusSession(group.parent) },
+                            onChat: { openChat(group.parent) },
+                            onOpenShell: { openShellForSession(group.parent) },
+                            onArchive: { archiveSession(group.parent) },
+                            onApprove: { approveSession(group.parent) },
+                            onReject: { rejectSession(group.parent) }
+                        )
+                    }
+                    .id(group.parent.stableId)
+
+                    // Collapsed badge
+                    if !group.children.isEmpty && collapsedGroups.contains(group.parent.stableId) {
+                        CollapsedAgentBadge(
+                            childCount: group.children.count,
+                            hasActive: group.children.contains { $0.phase != .idle && $0.phase != .ended }
+                        ) {
+                            withAnimation(Animation.spring(response: 0.25, dampingFraction: 0.8)) {
+                                toggleCollapse(group.parent.stableId)
+                            }
+                        }
+                    }
+
+                    // Expanded children
+                    if !group.children.isEmpty && !collapsedGroups.contains(group.parent.stableId) {
+                        ForEach(group.children) { child in
+                            InstanceRow(
+                                session: child,
+                                isSubagentRow: true,
+                                onFocus: { focusSession(child) },
+                                onChat: { openChat(child) },
+                                onOpenShell: { openShellForSession(child) },
+                                onArchive: { archiveSession(child) },
+                                onApprove: { approveSession(child) },
+                                onReject: { rejectSession(child) }
+                            )
+                            .padding(.leading, 20)
+                            .id(child.stableId)
+                        }
+                    }
                 }
             }
             .padding(.vertical, 4)
         }
         .scrollBounceBehavior(.basedOnSize)
+    }
+
+    // MARK: - Collapse Toggle
+
+    private func toggleCollapse(_ groupId: String) {
+        if collapsedGroups.contains(groupId) {
+            collapsedGroups.remove(groupId)
+        } else {
+            collapsedGroups.insert(groupId)
+        }
     }
 
     // MARK: - Actions
@@ -114,14 +201,36 @@ struct ClaudeInstancesView: View {
     private func archiveSession(_ session: SessionState) {
         sessionMonitor.archiveSession(sessionId: session.sessionId)
     }
+
+    private func openShellForSession(_ session: SessionState) {
+        if session.isInTmux {
+            focusSession(session)
+        } else {
+            Task {
+                // Try to focus the existing terminal first
+                if let pid = session.pid {
+                    let focused = await TerminalLauncher.shared.focusExistingTerminal(sessionPid: pid)
+                    if focused {
+                        viewModel.notchClose()
+                        return
+                    }
+                }
+                // Fallback: open a new terminal at the cwd
+                await TerminalLauncher.shared.openTerminal(at: session.cwd, sessionPid: session.pid)
+            }
+        }
+        viewModel.notchClose()
+    }
 }
 
 // MARK: - Instance Row
 
 struct InstanceRow: View {
     let session: SessionState
+    var isSubagentRow: Bool = false
     let onFocus: () -> Void
     let onChat: () -> Void
+    let onOpenShell: () -> Void
     let onArchive: () -> Void
     let onApprove: () -> Void
     let onReject: () -> Void
@@ -153,10 +262,17 @@ struct InstanceRow: View {
 
             // Text content
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.displayTitle)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if isSubagentRow {
+                        Image(systemName: "person")
+                            .font(.system(size: 9))
+                            .foregroundColor(.white.opacity(0.35))
+                    }
+                    Text(session.displayTitle)
+                        .font(.system(size: isSubagentRow ? 12 : 13, weight: .medium))
+                        .foregroundColor(.white.opacity(isSubagentRow ? 0.7 : 1.0))
+                        .lineLimit(1)
+                }
 
                 // Show tool call when waiting for approval, otherwise last activity
                 if isWaitingForApproval, let toolName = session.pendingToolName {
@@ -166,8 +282,23 @@ struct InstanceRow: View {
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundColor(TerminalColors.amber.opacity(0.9))
                         if isInteractiveTool {
-                            Text("Needs your input")
+                            let questionText = AskQuestionInput.parse(from: session.activePermission?.toolInput)?.question
+                            Text(questionText ?? "Needs your input")
                                 .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.5))
+                                .lineLimit(1)
+                        } else if let cmdInput = session.activePermission?.toolInput,
+                                  let cmd = cmdInput["command"]?.value as? String {
+                            // Bash: show command prominently
+                            Text(cmd)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.5))
+                                .lineLimit(1)
+                        } else if let cmdInput = session.activePermission?.toolInput,
+                                  let path = cmdInput["file_path"]?.value as? String {
+                            // File tools: show file path
+                            Text(path)
+                                .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.5))
                                 .lineLimit(1)
                         } else if let input = session.pendingToolInput {
@@ -252,22 +383,15 @@ struct InstanceRow: View {
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             } else {
                 HStack(spacing: 8) {
-                    // Chat icon - always show
-                    IconButton(icon: "bubble.left") {
-                        onChat()
+                    // Shell icon - open terminal at session cwd
+                    IconButton(icon: "terminal") {
+                        onOpenShell()
                     }
 
                     // Focus icon (only for tmux instances with yabai)
                     if session.isInTmux && isYabaiAvailable {
                         IconButton(icon: "eye") {
                             onFocus()
-                        }
-                    }
-
-                    // Archive button - only for idle or completed sessions
-                    if session.phase == .idle || session.phase == .waitingForInput {
-                        IconButton(icon: "archivebox") {
-                            onArchive()
                         }
                     }
                 }
@@ -278,7 +402,7 @@ struct InstanceRow: View {
         .padding(.trailing, 14)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
+        .onTapGesture {
             onChat()
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isWaitingForApproval)
@@ -410,6 +534,36 @@ struct IconButton: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
+    }
+}
+
+// MARK: - Collapsed Agent Badge
+
+struct CollapsedAgentBadge: View {
+    let childCount: Int
+    let hasActive: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button {
+            onTap()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "person.2")
+                    .font(.system(size: 9))
+                Text("+\(childCount) agent\(childCount == 1 ? "" : "s")")
+                    .font(.system(size: 10, weight: .medium))
+                if hasActive {
+                    Circle()
+                        .fill(Color(red: 0.85, green: 0.47, blue: 0.34))
+                        .frame(width: 5, height: 5)
+                }
+            }
+            .foregroundColor(.white.opacity(0.35))
+            .padding(.leading, 40)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
     }
 }
 

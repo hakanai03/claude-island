@@ -9,9 +9,14 @@ import AppKit
 import SwiftUI
 
 struct SoundPickerRow: View {
+    let title: String
+    let icon: String
     @ObservedObject var soundSelector: SoundSelector
+    let currentSound: NotificationSound
+    let onSoundChanged: (NotificationSound) -> Void
+
     @State private var isHovered = false
-    @State private var selectedSound: NotificationSound = AppSettings.notificationSound
+    @State private var selectedSound: NotificationSound = .none
 
     private var isExpanded: Bool {
         soundSelector.isPickerExpanded
@@ -30,12 +35,12 @@ struct SoundPickerRow: View {
                 }
             } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: "speaker.wave.2")
+                    Image(systemName: icon)
                         .font(.system(size: 12))
                         .foregroundColor(textColor)
                         .frame(width: 16)
 
-                    Text("Notification Sound")
+                    Text(title)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(textColor)
 
@@ -74,7 +79,7 @@ struct SoundPickerRow: View {
                                     NSSound(named: soundName)?.play()
                                 }
                                 selectedSound = sound
-                                AppSettings.notificationSound = sound
+                                onSoundChanged(sound)
                             }
                         }
                     }
@@ -85,7 +90,7 @@ struct SoundPickerRow: View {
             }
         }
         .onAppear {
-            selectedSound = AppSettings.notificationSound
+            selectedSound = currentSound
         }
     }
 

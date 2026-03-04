@@ -13,7 +13,9 @@ struct PermissionContext: Sendable {
     let toolUseId: String
     let toolName: String
     let toolInput: [String: AnyCodable]?
+    let message: String?
     let receivedAt: Date
+    let hasAlwaysOption: Bool
 
     /// Format tool input for display
     var formattedInput: String? {
@@ -102,6 +104,8 @@ enum SessionPhase: Sendable {
         // WaitingForInput transitions
         case (.waitingForInput, .processing):
             return true
+        case (.waitingForInput, .waitingForApproval):
+            return true  // Team mode: forwarded permission prompt while waiting for input
         case (.waitingForInput, .idle):
             return true  // Can become idle
         case (.waitingForInput, .compacting):

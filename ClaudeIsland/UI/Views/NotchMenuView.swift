@@ -17,7 +17,7 @@ struct NotchMenuView: View {
     @ObservedObject var viewModel: NotchViewModel
     @ObservedObject private var updateManager = UpdateManager.shared
     @ObservedObject private var screenSelector = ScreenSelector.shared
-    @ObservedObject private var soundSelector = SoundSelector.shared
+    // Sound selectors come from viewModel (two instances for done/permission)
     @State private var hooksInstalled: Bool = false
     @State private var launchAtLogin: Bool = false
 
@@ -37,7 +37,20 @@ struct NotchMenuView: View {
 
             // Appearance settings
             ScreenPickerRow(screenSelector: screenSelector)
-            SoundPickerRow(soundSelector: soundSelector)
+            SoundPickerRow(
+                title: "Done Sound",
+                icon: "speaker.wave.2",
+                soundSelector: viewModel.doneSoundSelector,
+                currentSound: AppSettings.notificationSound,
+                onSoundChanged: { AppSettings.notificationSound = $0 }
+            )
+            SoundPickerRow(
+                title: "Permission Sound",
+                icon: "questionmark.bubble",
+                soundSelector: viewModel.permissionSoundSelector,
+                currentSound: AppSettings.permissionSound,
+                onSoundChanged: { AppSettings.permissionSound = $0 }
+            )
 
             Divider()
                 .background(Color.white.opacity(0.08))

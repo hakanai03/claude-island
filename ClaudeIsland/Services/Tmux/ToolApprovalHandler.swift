@@ -48,6 +48,21 @@ actor ToolApprovalHandler {
         await sendKeys(to: target, keys: message, pressEnter: true)
     }
 
+    /// Send a message to a Claude session (tmux only)
+    func sendMessageWithFallback(
+        _ message: String,
+        tty: String,
+        isInTmux: Bool,
+        pid: Int?,
+        tmuxTarget: TmuxTarget?
+    ) async -> Bool {
+        if isInTmux, let target = tmuxTarget {
+            return await sendMessage(message, to: target)
+        }
+        return false
+    }
+
+
     // MARK: - Private Methods
 
     private func sendKeys(to target: TmuxTarget, keys: String, pressEnter: Bool) async -> Bool {

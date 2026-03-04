@@ -10,8 +10,6 @@ import Foundation
 
 @MainActor
 class SoundSelector: ObservableObject {
-    static let shared = SoundSelector()
-
     // MARK: - Published State
 
     @Published var isPickerExpanded: Bool = false
@@ -24,7 +22,7 @@ class SoundSelector: ObservableObject {
     /// Height per sound option row
     private let rowHeight: CGFloat = 32
 
-    private init() {}
+    init() {}
 
     // MARK: - Public API
 

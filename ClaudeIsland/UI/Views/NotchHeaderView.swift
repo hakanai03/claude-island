@@ -92,6 +92,41 @@ struct ClaudeCrabIcon: View {
     }
 }
 
+// MARK: - Stacked Crab Icons
+
+/// Shows multiple overlapping crab icons based on active session count
+struct StackedCrabIcons: View {
+    let count: Int
+    let size: CGFloat
+    var animateLegs: Bool = false
+
+    private var displayCount: Int { min(count, 2) }
+    private var offset: CGFloat { size * 0.35 }
+
+    var body: some View {
+        if count <= 1 {
+            ClaudeCrabIcon(size: size, animateLegs: animateLegs)
+        } else {
+            ZStack(alignment: .leading) {
+                ForEach((0..<displayCount).reversed(), id: \.self) { i in
+                    ClaudeCrabIcon(
+                        size: size,
+                        color: i == 0
+                            ? Color(red: 0.85, green: 0.47, blue: 0.34)
+                            : Color(red: 0.60, green: 0.33, blue: 0.24),
+                        animateLegs: animateLegs && i == 0
+                    )
+                    .offset(x: CGFloat(i) * offset, y: i > 0 ? -3 : 0)
+                }
+            }
+            .frame(
+                width: size * (66.0 / 52.0) + CGFloat(displayCount - 1) * offset,
+                height: size + (displayCount > 1 ? 3 : 0)
+            )
+        }
+    }
+}
+
 // Pixel art permission indicator icon
 struct PermissionIndicatorIcon: View {
     let size: CGFloat

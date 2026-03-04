@@ -24,6 +24,8 @@ struct ChatView: View {
     @State private var newMessageCount: Int = 0
     @State private var previousHistoryCount: Int = 0
     @State private var isBottomVisible: Bool = true
+    @State private var sendFailed: Bool = false
+    @State private var terminalSupportsSend: Bool = true  // optimistic default
     @FocusState private var isInputFocused: Bool
 
     init(sessionId: String, initialSession: SessionState, sessionMonitor: ClaudeSessionMonitor, viewModel: NotchViewModel) {
@@ -51,12 +53,28 @@ struct ChatView: View {
         session.phase.approvalToolName
     }
 
+    /// Other sessions (e.g. teammates) that have pending approvals
+    private var otherPendingApprovals: [SessionState] {
+        sessionMonitor.instances.filter {
+            $0.sessionId != sessionId && $0.phase.isWaitingForApproval
+        }
+    }
+
     
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
                 // Header
                 chatHeader
+
+                // Pending approvals from other sessions (e.g. teammates)
+                if !otherPendingApprovals.isEmpty {
+                    pendingTeammateApprovals
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .top)),
+                            removal: .opacity
+                        ))
+                }
 
                 // Messages
                 if isLoading {
@@ -70,8 +88,14 @@ struct ChatView: View {
                 // Approval bar, interactive prompt, or Input bar
                 if let tool = approvalTool {
                     if tool == "AskUserQuestion" {
-                        // Interactive tools - show prompt to answer in terminal
                         interactivePromptBar
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                removal: .opacity
+                            ))
+                    } else if tool == "ExitPlanMode" {
+                        planApprovalBar
+                            .frame(minHeight: 350)
                             .transition(.asymmetric(
                                 insertion: .opacity.combined(with: .move(edge: .bottom)),
                                 removal: .opacity
@@ -83,9 +107,27 @@ struct ChatView: View {
                                 removal: .opacity
                             ))
                     }
-                } else {
-                    inputBar
+                } else if !terminalSupportsSend {
+                    // Non-tmux, non-iTerm2: show recommendation + terminal button
+                    unsupportedTerminalBar
                         .transition(.opacity)
+                } else {
+                    VStack(spacing: 0) {
+                        if sendFailed {
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 11))
+                                Text("Failed to send message to terminal")
+                                    .font(.system(size: 11))
+                            }
+                            .foregroundColor(.orange)
+                            .padding(.vertical, 4)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
+                        inputBar
+                    }
+                    .animation(.easeInOut(duration: 0.2), value: sendFailed)
+                    .transition(.opacity)
                 }
             }
         }
@@ -168,9 +210,10 @@ struct ChatView: View {
             }
         }
         .onAppear {
-            // Auto-focus input when chat opens and tmux messaging is available
+            terminalSupportsSend = session.isInTmux
+
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                if canSendMessages {
+                if canSendMessages && terminalSupportsSend {
                     isInputFocused = true
                 }
             }
@@ -182,31 +225,42 @@ struct ChatView: View {
     @State private var isHeaderHovered = false
 
     private var chatHeader: some View {
-        Button {
-            viewModel.exitChat()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.6))
-                    .frame(width: 24, height: 24)
+        HStack(spacing: 0) {
+            Button {
+                viewModel.exitChat()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.6))
+                        .frame(width: 24, height: 24)
 
-                Text(session.displayTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.85))
-                    .lineLimit(1)
-
-                Spacer()
+                    Text(session.displayTitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white.opacity(isHeaderHovered ? 1.0 : 0.85))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isHeaderHovered ? Color.white.opacity(0.08) : Color.clear)
+                )
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHeaderHovered ? Color.white.opacity(0.08) : Color.clear)
-            )
+            .buttonStyle(.plain)
+            .onHover { isHeaderHovered = $0 }
+
+            Spacer()
+
+            // Archive button
+            if session.phase == .idle || session.phase == .waitingForInput || session.phase == .ended {
+                IconButton(icon: "archivebox") {
+                    sessionMonitor.archiveSession(sessionId: sessionId)
+                    viewModel.exitChat()
+                }
+                .padding(.trailing, 4)
+            }
         }
-        .buttonStyle(.plain)
-        .onHover { isHeaderHovered = $0 }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Color.black.opacity(0.2))
@@ -353,14 +407,14 @@ struct ChatView: View {
 
     // MARK: - Input Bar
 
-    /// Can send messages only if session is in tmux
+    /// Can send messages if we have a TTY (tmux or direct)
     private var canSendMessages: Bool {
-        session.isInTmux && session.tty != nil
+        session.tty != nil
     }
 
     private var inputBar: some View {
         HStack(spacing: 10) {
-            TextField(canSendMessages ? "Message Claude..." : "Open Claude Code in tmux to enable messaging", text: $inputText)
+            TextField(canSendMessages ? "Message Claude..." : "No TTY detected", text: $inputText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .foregroundColor(canSendMessages ? .white : .white.opacity(0.4))
@@ -406,12 +460,126 @@ struct ChatView: View {
         .zIndex(1) // Render above message list
     }
 
+    // MARK: - Unsupported Terminal Bar
+
+    private var unsupportedTerminalBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Use tmux for messaging")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+
+            Spacer()
+
+            Button { focusTerminal() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 11, weight: .medium))
+                    Text("Terminal")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .foregroundColor(.black)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.95))
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.2))
+    }
+
+    // MARK: - Pending Teammate Approvals
+
+    private var pendingTeammateApprovals: some View {
+        VStack(spacing: 2) {
+            ForEach(otherPendingApprovals) { pending in
+                HStack(spacing: 8) {
+                    // Session name + tool
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(pending.displayTitle)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .lineLimit(1)
+                        if let toolName = pending.pendingToolName {
+                            HStack(spacing: 4) {
+                                Text(MCPToolFormatter.formatToolName(toolName))
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundColor(TerminalColors.amber.opacity(0.9))
+                                if let input = pending.activePermission?.toolInput,
+                                   let cmd = input["command"]?.value as? String {
+                                    Text(cmd)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundColor(.white.opacity(0.4))
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+
+                    // Deny
+                    Button {
+                        sessionMonitor.denyPermission(sessionId: pending.sessionId, reason: nil)
+                    } label: {
+                        Text("Deny")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.white.opacity(0.6))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    // Allow
+                    Button {
+                        sessionMonitor.approvePermission(sessionId: pending.sessionId)
+                    } label: {
+                        Text("Allow")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.9))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+            }
+        }
+        .background(TerminalColors.amber.opacity(0.1))
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: otherPendingApprovals.count)
+    }
+
     // MARK: - Approval Bar
 
     private func approvalBar(tool: String) -> some View {
-        ChatApprovalBar(
+        // Show "Always" only when Claude Code indicates permission_suggestions are available
+        let hasAlways = session.activePermission?.hasAlwaysOption ?? false
+        return ChatApprovalBar(
             tool: tool,
-            toolInput: session.pendingToolInput,
+            toolInput: session.activePermission?.toolInput,
+            message: session.activePermission?.message,
+            onApproveAlways: hasAlways ? {
+                sessionMonitor.approvePermissionAlways(sessionId: sessionId)
+            } : nil,
+            onApprove: { approvePermission() },
+            onDeny: { denyPermission() }
+        )
+    }
+
+    // MARK: - Plan Approval Bar
+
+    private var planApprovalBar: some View {
+        PlanApprovalBar(
+            toolInput: session.activePermission?.toolInput,
             onApprove: { approvePermission() },
             onDeny: { denyPermission() }
         )
@@ -419,10 +587,12 @@ struct ChatView: View {
 
     // MARK: - Interactive Prompt Bar
 
-    /// Bar for interactive tools like AskUserQuestion that need terminal input
+    /// Bar for interactive tools like AskUserQuestion
     private var interactivePromptBar: some View {
-        ChatInteractivePromptBar(
+        AskUserQuestionBar(
+            toolInput: session.activePermission?.toolInput,
             isInTmux: session.isInTmux,
+            onAnswer: { answer in answerQuestion(answer) },
             onGoToTerminal: { focusTerminal() }
         )
     }
@@ -445,7 +615,14 @@ struct ChatView: View {
     // MARK: - Actions
 
     private func focusTerminal() {
+        viewModel.notchClose()
         Task {
+            // Try TerminalLauncher first (works without yabai)
+            if let pid = session.pid {
+                let focused = await TerminalLauncher.shared.focusExistingTerminal(sessionPid: pid)
+                if focused { return }
+            }
+            // Fallback to yabai
             if let pid = session.pid {
                 _ = await YabaiController.shared.focusWindow(forClaudePid: pid)
             } else {
@@ -462,6 +639,10 @@ struct ChatView: View {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
     }
 
+    private func answerQuestion(_ answer: String) {
+        sessionMonitor.answerQuestion(sessionId: sessionId, answer: answer)
+    }
+
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -474,47 +655,33 @@ struct ChatView: View {
 
         // Don't add to history here - it will be synced from JSONL when UserPromptSubmit event fires
         Task {
-            await sendToSession(text)
+            let success = await sendToSession(text)
+            if !success {
+                sendFailed = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    sendFailed = false
+                }
+            }
         }
     }
 
-    private func sendToSession(_ text: String) async {
-        guard session.isInTmux else { return }
-        guard let tty = session.tty else { return }
+    @discardableResult
+    private func sendToSession(_ text: String) async -> Bool {
+        guard let tty = session.tty else { return false }
 
-        if let target = await findTmuxTarget(tty: tty) {
-            _ = await ToolApprovalHandler.shared.sendMessage(text, to: target)
-        }
+        let tmuxTarget: TmuxTarget? = session.isInTmux ? await findTmuxTarget(tty: tty) : nil
+
+        return await ToolApprovalHandler.shared.sendMessageWithFallback(
+            text,
+            tty: tty,
+            isInTmux: session.isInTmux,
+            pid: session.pid,
+            tmuxTarget: tmuxTarget
+        )
     }
 
     private func findTmuxTarget(tty: String) async -> TmuxTarget? {
-        guard let tmuxPath = await TmuxPathFinder.shared.getTmuxPath() else {
-            return nil
-        }
-
-        do {
-            let output = try await ProcessExecutor.shared.run(
-                tmuxPath,
-                arguments: ["list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index} #{pane_tty}"]
-            )
-
-            let lines = output.components(separatedBy: "\n")
-            for line in lines {
-                let parts = line.components(separatedBy: " ")
-                guard parts.count >= 2 else { continue }
-
-                let target = parts[0]
-                let paneTty = parts[1].replacingOccurrences(of: "/dev/", with: "")
-
-                if paneTty == tty {
-                    return TmuxTarget(from: target)
-                }
-            }
-        } catch {
-            return nil
-        }
-
-        return nil
+        await ClaudeSessionMonitor.findTmuxTarget(tty: tty)
     }
 }
 
@@ -733,6 +900,21 @@ struct ToolCallView: View {
                         .rotationEffect(.degrees(isExpanded ? 90 : 0))
                         .animation(.spring(response: 0.25, dampingFraction: 0.8), value: isExpanded)
                 }
+            }
+
+            // Subtitle: input preview (file path, command, pattern)
+            if !tool.inputPreview.isEmpty && tool.name != "Task" && tool.name != "AgentOutputTool" {
+                HStack(spacing: 4) {
+                    Text("└")
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.2))
+                    Text("\(MCPToolFormatter.formatToolName(tool.name))(\(tool.inputPreview))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.3))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.leading, 12)
             }
 
             // Subagent tools list (for Task tools)
@@ -979,19 +1161,191 @@ struct InterruptedMessageView: View {
     }
 }
 
-// MARK: - Chat Interactive Prompt Bar
+// MARK: - AskUserQuestion Input Parser
 
-/// Bar for interactive tools like AskUserQuestion that need terminal input
-struct ChatInteractivePromptBar: View {
+/// Parsed question data from AskUserQuestion tool_input
+struct AskQuestionInput {
+    let question: String
+    let options: [QuestionOption]
+    let multiSelect: Bool
+
+    static func parse(from toolInput: [String: AnyCodable]?) -> AskQuestionInput? {
+        guard let input = toolInput,
+              let questionsAny = input["questions"]?.value as? [Any],
+              let firstQ = questionsAny.first as? [String: Any],
+              let question = firstQ["question"] as? String else { return nil }
+
+        var options: [QuestionOption] = []
+        if let optionsArray = firstQ["options"] as? [[String: Any]] {
+            options = optionsArray.compactMap { opt in
+                guard let label = opt["label"] as? String else { return nil }
+                return QuestionOption(label: label, description: opt["description"] as? String)
+            }
+        }
+        let multiSelect = firstQ["multiSelect"] as? Bool ?? false
+        return AskQuestionInput(question: question, options: options, multiSelect: multiSelect)
+    }
+}
+
+// MARK: - AskUserQuestion Bar
+
+/// Bar for AskUserQuestion — shows question, option chips, and text input
+struct AskUserQuestionBar: View {
+    let toolInput: [String: AnyCodable]?
     let isInTmux: Bool
+    let onAnswer: (String) -> Void
     let onGoToTerminal: () -> Void
 
+    @State private var inputText: String = ""
     @State private var showContent = false
-    @State private var showButton = false
+    @State private var showOptions = false
+    @State private var showInput = false
+    @FocusState private var isInputFocused: Bool
+
+    private var parsed: AskQuestionInput? {
+        AskQuestionInput.parse(from: toolInput)
+    }
 
     var body: some View {
+        if let q = parsed {
+            questionUI(q)
+        } else {
+            fallbackBar
+        }
+    }
+
+    // MARK: - Question UI
+
+    private func questionUI(_ q: AskQuestionInput) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Question text
+            Text(q.question)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(showContent ? 1 : 0)
+                .offset(y: showContent ? 0 : 6)
+
+            // Option chips
+            if !q.options.isEmpty {
+                optionChips(q.options)
+                    .opacity(showOptions ? 1 : 0)
+                    .offset(y: showOptions ? 0 : 4)
+            }
+
+            // Text input + optional Terminal button
+            HStack(spacing: 8) {
+                TextField(q.options.isEmpty ? "Type your answer..." : "Or type a custom answer...", text: $inputText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white)
+                    .focused($isInputFocused)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16)
+                            .fill(Color.white.opacity(0.08))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16)
+                                    .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                            )
+                    )
+                    .onSubmit { submitText(options: q.options) }
+
+                Button {
+                    submitText(options: q.options)
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(inputText.isEmpty ? .white.opacity(0.2) : .white.opacity(0.9))
+                }
+                .buttonStyle(.plain)
+                .disabled(inputText.isEmpty)
+
+                // Terminal button for non-tmux sessions
+                if !isInTmux {
+                    Button { onGoToTerminal() } label: {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.6))
+                            .frame(width: 28, height: 28)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .opacity(showInput ? 1 : 0)
+            .offset(y: showInput ? 0 : 4)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color.black.opacity(0.2))
+        .onAppear {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
+                showContent = true
+            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.1)) {
+                showOptions = true
+            }
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.15)) {
+                showInput = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                isInputFocused = true
+            }
+        }
+    }
+
+    // MARK: - Option Chips
+
+    private func optionChips(_ options: [QuestionOption]) -> some View {
+        FlowLayout(spacing: 6) {
+            ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                Button {
+                    // Send 1-indexed option number
+                    onAnswer(String(index + 1))
+                } label: {
+                    Text(option.label)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14)
+                                .fill(Color.white.opacity(0.12))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14)
+                                        .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Text Submit
+
+    private func submitText(options: [QuestionOption]) {
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+
+        if options.isEmpty {
+            // No options — send text directly
+            onAnswer(text)
+        } else {
+            // Has options — select "Other" (options.count + 1) then type text
+            let otherIndex = options.count + 1
+            onAnswer("\(otherIndex)\n\(text)")
+        }
+        inputText = ""
+    }
+
+    // MARK: - Fallback (no parsed question)
+
+    private var fallbackBar: some View {
         HStack(spacing: 12) {
-            // Tool info - same style as approval bar
             VStack(alignment: .leading, spacing: 2) {
                 Text(MCPToolFormatter.formatToolName("AskUserQuestion"))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -1006,11 +1360,8 @@ struct ChatInteractivePromptBar: View {
 
             Spacer()
 
-            // Terminal button on right (similar to Allow button)
             Button {
-                if isInTmux {
-                    onGoToTerminal()
-                }
+                onGoToTerminal()
             } label: {
                 HStack(spacing: 4) {
                     Image(systemName: "terminal")
@@ -1018,17 +1369,17 @@ struct ChatInteractivePromptBar: View {
                     Text("Terminal")
                         .font(.system(size: 13, weight: .medium))
                 }
-                .foregroundColor(isInTmux ? .black : .white.opacity(0.4))
+                .foregroundColor(.black)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(isInTmux ? Color.white.opacity(0.95) : Color.white.opacity(0.1))
+                .background(Color.white.opacity(0.95))
                 .clipShape(Capsule())
             }
             .buttonStyle(.plain)
-            .opacity(showButton ? 1 : 0)
-            .scaleEffect(showButton ? 1 : 0.8)
+            .opacity(showInput ? 1 : 0)
+            .scaleEffect(showInput ? 1 : 0.8)
         }
-        .frame(minHeight: 44)  // Consistent height with other bars
+        .frame(minHeight: 44)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color.black.opacity(0.2))
@@ -1037,7 +1388,194 @@ struct ChatInteractivePromptBar: View {
                 showContent = true
             }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.1)) {
-                showButton = true
+                showInput = true
+            }
+        }
+    }
+}
+
+// MARK: - Flow Layout (for option chips)
+
+/// Simple flow layout that wraps items to the next line
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let result = arrangeSubviews(proposal: proposal, subviews: subviews)
+        return result.size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let result = arrangeSubviews(proposal: proposal, subviews: subviews)
+        for (index, position) in result.positions.enumerated() {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + position.x, y: bounds.minY + position.y),
+                proposal: .unspecified
+            )
+        }
+    }
+
+    private struct ArrangementResult {
+        var positions: [CGPoint]
+        var size: CGSize
+    }
+
+    private func arrangeSubviews(proposal: ProposedViewSize, subviews: Subviews) -> ArrangementResult {
+        let maxWidth = proposal.width ?? .infinity
+        var positions: [CGPoint] = []
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var totalWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if currentX + size.width > maxWidth && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + spacing
+                lineHeight = 0
+            }
+            positions.append(CGPoint(x: currentX, y: currentY))
+            lineHeight = max(lineHeight, size.height)
+            currentX += size.width + spacing
+            totalWidth = max(totalWidth, currentX - spacing)
+        }
+
+        return ArrangementResult(
+            positions: positions,
+            size: CGSize(width: totalWidth, height: currentY + lineHeight)
+        )
+    }
+}
+
+// MARK: - Plan Approval Bar
+
+/// Approval bar for ExitPlanMode — shows plan content with Markdown rendering
+struct PlanApprovalBar: View {
+    let toolInput: [String: AnyCodable]?
+    let onApprove: () -> Void
+    let onDeny: () -> Void
+
+    @State private var showContent = false
+    @State private var showButtons = false
+
+    private var planContent: String? {
+        guard let input = toolInput,
+              let plan = input["plan"]?.value as? String else { return nil }
+        return plan
+    }
+
+    /// Extract allowedPrompts for display
+    private var allowedPrompts: [(tool: String, prompt: String)] {
+        guard let input = toolInput,
+              let prompts = input["allowedPrompts"]?.value as? [[String: Any]] else { return [] }
+        return prompts.compactMap { p in
+            guard let tool = p["tool"] as? String,
+                  let prompt = p["prompt"] as? String else { return nil }
+            return (tool: tool, prompt: prompt)
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Plan content area — takes available space
+            if let plan = planContent {
+                VStack(spacing: 0) {
+                    // Drag handle
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(Color.white.opacity(0.3))
+                        .frame(width: 32, height: 4)
+                        .padding(.top, 8)
+                        .padding(.bottom, 6)
+
+                    // Scrollable plan content with Markdown
+                    ScrollView(.vertical, showsIndicators: true) {
+                        MarkdownText(plan, color: .white.opacity(0.85), fontSize: 12)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 12)
+                    }
+                }
+                .opacity(showContent ? 1 : 0)
+                .offset(y: showContent ? 0 : 10)
+            } else {
+                // Fallback: no plan content
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(MCPToolFormatter.formatToolName("ExitPlanMode"))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(TerminalColors.amber)
+                    Text("Plan ready for approval")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .opacity(showContent ? 1 : 0)
+            }
+
+            // Allowed prompts info
+            if !allowedPrompts.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Auto-approved actions:")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.4))
+                    ForEach(Array(allowedPrompts.enumerated()), id: \.offset) { _, prompt in
+                        HStack(spacing: 4) {
+                            Text(prompt.tool)
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(TerminalColors.amber.opacity(0.6))
+                            Text(prompt.prompt)
+                                .font(.system(size: 10))
+                                .foregroundColor(.white.opacity(0.35))
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.03))
+                .opacity(showButtons ? 1 : 0)
+            }
+
+            // Allow / Deny buttons
+            HStack(spacing: 12) {
+                Spacer()
+
+                Button { onDeny() } label: {
+                    Text("Deny")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button { onApprove() } label: {
+                    Text("Allow")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.95))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .opacity(showButtons ? 1 : 0)
+            .scaleEffect(showButtons ? 1 : 0.9)
+        }
+        .background(Color.black.opacity(0.3))
+        .onAppear {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7).delay(0.05)) {
+                showContent = true
+            }
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.15)) {
+                showButtons = true
             }
         }
     }
@@ -1045,69 +1583,138 @@ struct ChatInteractivePromptBar: View {
 
 // MARK: - Chat Approval Bar
 
-/// Approval bar for the chat view with animated buttons
+/// Approval bar for the chat view with animated buttons and rich tool info
 struct ChatApprovalBar: View {
     let tool: String
-    let toolInput: String?
+    let toolInput: [String: AnyCodable]?
+    var message: String? = nil
+    var onApproveAlways: (() -> Void)? = nil
     let onApprove: () -> Void
     let onDeny: () -> Void
 
     @State private var showContent = false
     @State private var showAllowButton = false
     @State private var showDenyButton = false
+    @State private var showAlwaysButton = false
+
+    // Extract key fields for specific tools
+    private var command: String? {
+        toolInput?["command"]?.value as? String
+    }
+    private var toolDescription: String? {
+        toolInput?["description"]?.value as? String
+    }
+    private var filePath: String? {
+        toolInput?["file_path"]?.value as? String
+    }
+    private var isBashTool: Bool {
+        tool == "Bash" || tool == "BashOutput"
+    }
+    private var isFileTool: Bool {
+        tool == "Edit" || tool == "Write" || tool == "Read" || tool == "Glob" || tool == "Grep"
+    }
+
+    /// Generate an approximate always-allow pattern like "wc:*" or "gh search:*"
+    private var alwaysPattern: String? {
+        if isBashTool, let cmd = command {
+            let parts = cmd.trimmingCharacters(in: .whitespaces).components(separatedBy: .whitespaces)
+            guard let first = parts.first, !first.isEmpty else { return nil }
+            // Known multi-word commands (git, gh, npm, docker, etc.)
+            let multiWordPrefixes = ["git", "gh", "npm", "npx", "docker", "cargo", "kubectl", "brew"]
+            if multiWordPrefixes.contains(first), parts.count > 1 {
+                return "\(first) \(parts[1]):*"
+            }
+            return "\(first):*"
+        }
+        return nil
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            // Notification message (team mode: forwarded permission prompt)
+            if let message = message, !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.8))
+                    .lineLimit(3)
+            }
+
             // Tool info
-            VStack(alignment: .leading, spacing: 2) {
+            HStack {
                 Text(MCPToolFormatter.formatToolName(tool))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(TerminalColors.amber)
-                if let input = toolInput {
-                    Text(input)
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                        .lineLimit(1)
+                Spacer()
+            }
+
+            // Tool-specific content
+            if isBashTool {
+                bashContent
+            } else if isFileTool {
+                fileContent
+            } else {
+                genericContent
+            }
+
+            // Buttons row
+            HStack {
+                Spacer()
+
+                Button {
+                    onDeny()
+                } label: {
+                    Text("Deny")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Capsule())
                 }
-            }
-            .opacity(showContent ? 1 : 0)
-            .offset(x: showContent ? 0 : -10)
+                .buttonStyle(.plain)
+                .opacity(showDenyButton ? 1 : 0)
+                .scaleEffect(showDenyButton ? 1 : 0.8)
 
-            Spacer()
+                if let onApproveAlways, let pattern = alwaysPattern {
+                    Button {
+                        onApproveAlways()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Always")
+                                .font(.system(size: 13, weight: .medium))
+                            Text(pattern)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        .foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.2))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(showAlwaysButton ? 1 : 0)
+                    .scaleEffect(showAlwaysButton ? 1 : 0.8)
+                }
 
-            // Deny button
-            Button {
-                onDeny()
-            } label: {
-                Text("Deny")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.1))
-                    .clipShape(Capsule())
+                Button {
+                    onApprove()
+                } label: {
+                    Text("Allow")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.white.opacity(0.95))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .opacity(showAllowButton ? 1 : 0)
+                .scaleEffect(showAllowButton ? 1 : 0.8)
             }
-            .buttonStyle(.plain)
-            .opacity(showDenyButton ? 1 : 0)
-            .scaleEffect(showDenyButton ? 1 : 0.8)
-
-            // Allow button
-            Button {
-                onApprove()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Color.white.opacity(0.95))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .opacity(showAllowButton ? 1 : 0)
-            .scaleEffect(showAllowButton ? 1 : 0.8)
         }
-        .frame(minHeight: 44)  // Consistent height with other bars
+        .opacity(showContent ? 1 : 0)
+        .offset(x: showContent ? 0 : -10)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color.black.opacity(0.2))
@@ -1118,10 +1725,96 @@ struct ChatApprovalBar: View {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.1)) {
                 showDenyButton = true
             }
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.125)) {
+                showAlwaysButton = true
+            }
             withAnimation(.spring(response: 0.35, dampingFraction: 0.7).delay(0.15)) {
                 showAllowButton = true
             }
         }
+    }
+
+    // MARK: - Bash Tool Content
+
+    @ViewBuilder
+    private var bashContent: some View {
+        if let cmd = command {
+            Text(cmd)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(.white.opacity(0.9))
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(6)
+                .lineLimit(5)
+        }
+        if let desc = toolDescription {
+            Text(desc)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.5))
+                .lineLimit(2)
+        }
+    }
+
+    // MARK: - File Tool Content
+
+    @ViewBuilder
+    private var fileContent: some View {
+        if let path = filePath {
+            Text(path)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(.white.opacity(0.8))
+                .lineLimit(2)
+        }
+        if let desc = toolDescription {
+            Text(desc)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.5))
+                .lineLimit(2)
+        }
+    }
+
+    // MARK: - Generic Tool Content
+
+    @ViewBuilder
+    private var genericContent: some View {
+        if let formatted = formattedFallback {
+            Text(formatted)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.5))
+                .lineLimit(3)
+        }
+    }
+
+    /// Format tool input with priority ordering for key fields
+    private var formattedFallback: String? {
+        guard let input = toolInput else { return nil }
+        let priorityKeys = ["command", "file_path", "pattern", "query", "url", "prompt"]
+        let sortedKeys = input.keys.sorted { a, b in
+            let aPriority = priorityKeys.firstIndex(of: a) ?? 999
+            let bPriority = priorityKeys.firstIndex(of: b) ?? 999
+            if aPriority != bPriority { return aPriority < bPriority }
+            return a < b
+        }
+        var parts: [String] = []
+        for key in sortedKeys.prefix(3) {
+            guard let value = input[key] else { continue }
+            let str: String
+            switch value.value {
+            case let s as String:
+                str = s.count > 80 ? String(s.prefix(80)) + "..." : s
+            case let n as Int:
+                str = String(n)
+            case let n as Double:
+                str = String(n)
+            case let b as Bool:
+                str = b ? "true" : "false"
+            default:
+                str = "..."
+            }
+            parts.append("\(key): \(str)")
+        }
+        return parts.joined(separator: "\n")
     }
 }
 

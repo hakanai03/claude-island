@@ -26,26 +26,36 @@ class JSONLInterruptWatcher {
     private let filePath: String
     private let queue = DispatchQueue(label: "com.claudeisland.interruptwatcher", qos: .userInteractive)
 
+    /// Grace period after start — ignore interrupts to avoid false positives
+    /// from previous turn's cleanup writes (e.g., [Request interrupted by user] from prior Ctrl+C)
+    private var startedAt: Date = .distantPast
+    private static let gracePeriodSeconds: TimeInterval = 3
+
     weak var delegate: JSONLInterruptWatcherDelegate?
 
     /// Patterns that indicate an interrupt occurred
     /// We check for is_error:true combined with interrupt content
+    /// Note: "user doesn't want to proceed" is NOT an interrupt — it's a normal tool denial result
     private static let interruptContentPatterns = [
         "Interrupted by user",
         "interrupted by user",
-        "user doesn't want to proceed",
         "[Request interrupted by user"
     ]
 
-    init(sessionId: String, cwd: String) {
+    init(sessionId: String, cwd: String, transcriptPath: String? = nil) {
         self.sessionId = sessionId
-        let projectDir = cwd.replacingOccurrences(of: "/", with: "-")
-                            .replacingOccurrences(of: ".", with: "-")
-        self.filePath = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/" + sessionId + ".jsonl"
+        if let transcriptPath {
+            self.filePath = transcriptPath
+        } else {
+            let projectDir = cwd.replacingOccurrences(of: "/", with: "-")
+                                .replacingOccurrences(of: ".", with: "-")
+            self.filePath = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/" + sessionId + ".jsonl"
+        }
     }
 
     /// Start watching the JSONL file for interrupts
     func start() {
+        startedAt = Date()
         queue.async { [weak self] in
             self?.startWatching()
         }
@@ -116,6 +126,12 @@ class JSONLInterruptWatcher {
 
         lastOffset = currentSize
 
+        // Grace period: skip interrupt detection within first few seconds of starting.
+        // Prevents false positives from previous turn's cleanup writes leaking into the new watcher.
+        if Date().timeIntervalSince(startedAt) < Self.gracePeriodSeconds {
+            return
+        }
+
         let lines = newContent.components(separatedBy: "\n")
         for line in lines where !line.isEmpty {
             if isInterruptLine(line) {
@@ -185,10 +201,10 @@ class InterruptWatcherManager {
 
     private init() {}
 
-    func startWatching(sessionId: String, cwd: String) {
+    func startWatching(sessionId: String, cwd: String, transcriptPath: String? = nil) {
         guard watchers[sessionId] == nil else { return }
 
-        let watcher = JSONLInterruptWatcher(sessionId: sessionId, cwd: cwd)
+        let watcher = JSONLInterruptWatcher(sessionId: sessionId, cwd: cwd, transcriptPath: transcriptPath)
         watcher.delegate = delegate
         watcher.start()
         watchers[sessionId] = watcher
