@@ -62,12 +62,20 @@ struct NotchView: View {
 
     /// Whether any Claude session is waiting for user input (done/ready state) within the display window
     private var hasWaitingForInput: Bool {
+        // Don't show checkmark while subagent sessions are still active (team mode)
+        let hasActiveSubagents = sessionMonitor.instances.contains { (s: SessionState) -> Bool in
+            s.isSubagent && s.phase != .idle && s.phase != .ended
+        }
+        if hasActiveSubagents { return false }
+
         let now = Date()
         let displayDuration: TimeInterval = 10  // Show checkmark for 10 seconds
 
+        // Only show checkmark for main (non-subagent) sessions
         return sessionMonitor.instances.contains { session in
+            guard !session.isSubagent else { return false }
             guard session.phase == .waitingForInput else { return false }
-            // Only show if within the 30-second display window
+            // Only show if within the 10-second display window
             if let enteredAt = waitingForInputTimestamps[session.stableId] {
                 return now.timeIntervalSince(enteredAt) < displayDuration
             }
@@ -539,34 +547,11 @@ struct NotchView: View {
             // Debounce: wait 3s and verify sessions are still waiting
             // (SubagentStop/PostToolUse can cause transient waitingForInput that lasts 1-2s)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
-                let stillWaiting = sessionMonitor.instances.filter {
-                    $0.phase == .waitingForInput && capturedNewWaitingIds.contains($0.stableId)
-                }
-                // Only notify for main agent sessions that have no active subagents
-                // and were not just compacting
-                let mainAgentDone = stillWaiting.filter {
-                    !$0.isSubagent && !$0.subagentState.hasActiveSubagent
-                        && !capturedCompactedIds.contains($0.stableId)
-                }
-                guard !mainAgentDone.isEmpty else { return }
-
-                // Play notification sound if the session is not actively focused
-                if let soundName = AppSettings.notificationSound.soundName {
-                    Task {
-                        let shouldPlaySound = await shouldPlayNotificationSound(for: mainAgentDone)
-                        if shouldPlaySound {
-                            await MainActor.run {
-                                NSSound(named: soundName)?.play()
-                            }
-                        }
-                    }
-                }
-
-                // Trigger bounce animation to get user's attention
-                isBouncing = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    isBouncing = false
-                }
+                notifyIfMainAgentDone(
+                    capturedNewWaitingIds: capturedNewWaitingIds,
+                    capturedCompactedIds: capturedCompactedIds,
+                    retriesLeft: 10
+                )
             }
 
             // Schedule hiding the checkmark after 10 seconds
@@ -577,6 +562,59 @@ struct NotchView: View {
         }
 
         previousWaitingForInputIds = currentIds
+    }
+
+    /// Notify when main agent is done, deferring if team-mode subagent sessions are still active.
+    /// Retries every 3s up to `retriesLeft` times to wait for subagents to finish.
+    private func notifyIfMainAgentDone(
+        capturedNewWaitingIds: Set<String>,
+        capturedCompactedIds: Set<String>,
+        retriesLeft: Int
+    ) {
+        let stillWaiting = sessionMonitor.instances.filter {
+            $0.phase == .waitingForInput && capturedNewWaitingIds.contains($0.stableId)
+        }
+        // Only notify for main agent sessions that have no active subagents
+        // and were not just compacting
+        let mainAgentDone = stillWaiting.filter {
+            !$0.isSubagent && !$0.subagentState.hasActiveSubagent
+                && !capturedCompactedIds.contains($0.stableId)
+        }
+        guard !mainAgentDone.isEmpty else { return }
+
+        // Check for active subagent sessions (team mode uses sessions, not Task tool)
+        let hasActiveSubagentSessions = sessionMonitor.instances.contains { (instance: SessionState) -> Bool in
+            instance.isSubagent && instance.phase != .idle && instance.phase != .ended
+        }
+        if hasActiveSubagentSessions && retriesLeft > 0 {
+            // Subagents still active — re-check in 3s
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
+                notifyIfMainAgentDone(
+                    capturedNewWaitingIds: capturedNewWaitingIds,
+                    capturedCompactedIds: capturedCompactedIds,
+                    retriesLeft: retriesLeft - 1
+                )
+            }
+            return
+        }
+
+        // Play notification sound if the session is not actively focused
+        if let soundName = AppSettings.notificationSound.soundName {
+            Task {
+                let shouldPlaySound = await shouldPlayNotificationSound(for: mainAgentDone)
+                if shouldPlaySound {
+                    await MainActor.run {
+                        NSSound(named: soundName)?.play()
+                    }
+                }
+            }
+        }
+
+        // Trigger bounce animation to get user's attention
+        isBouncing = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            isBouncing = false
+        }
     }
 
     // MARK: - Peek Content View
@@ -648,16 +686,30 @@ struct NotchView: View {
     @ViewBuilder
     private func peekPermissionContent(session: SessionState) -> some View {
         let toolName: String = {
-            guard let lastTool = ChatHistoryManager.shared.history(for: session.sessionId)
+            // Try ChatHistoryManager first
+            if let lastTool = ChatHistoryManager.shared.history(for: session.sessionId)
                 .compactMap({ item -> ToolCallItem? in
                     if case .toolCall(let tool) = item.type { return tool }
                     return nil
                 })
-                .last(where: { $0.status == .waitingForApproval })
-            else { return "Permission required" }
-            let name = MCPToolFormatter.formatToolName(lastTool.name)
-            let preview = lastTool.inputPreview
-            return preview.isEmpty ? name : "\(name)(\(preview))"
+                .last(where: { $0.status == .waitingForApproval }) {
+                let name = MCPToolFormatter.formatToolName(lastTool.name)
+                let preview = lastTool.inputPreview
+                return preview.isEmpty ? name : "\(name)(\(preview))"
+            }
+            // Fallback: extract from activePermission (covers team-mode forwarded permissions)
+            if let perm = session.activePermission {
+                let name = MCPToolFormatter.formatToolName(perm.toolName)
+                if let command = perm.toolInput?["command"]?.value as? String {
+                    let firstLine = command.components(separatedBy: "\n").first ?? command
+                    return "\(name)(\(String(firstLine.prefix(60))))"
+                }
+                if let desc = perm.toolInput?["description"]?.value as? String {
+                    return "\(name): \(String(desc.prefix(50)))"
+                }
+                return name
+            }
+            return "Permission required"
         }()
 
         let hasAlways = session.activePermission?.hasAlwaysOption ?? false

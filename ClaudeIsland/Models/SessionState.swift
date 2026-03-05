@@ -129,8 +129,17 @@ struct SessionState: Equatable, Identifiable, Sendable {
     }
 
     /// Whether this session is a teammate/subagent
+    /// Detects both team mode agents (via JSONL content) and Agent tool-spawned sub-agents (via transcript path)
     var isSubagent: Bool {
-        conversationInfo.isSubagent
+        if conversationInfo.isSubagent { return true }
+        // Agent tool sub-agents write to agent-<agentId>.jsonl
+        if let path = transcriptPath {
+            let filename = (path as NSString).lastPathComponent
+            if filename.hasPrefix("agent-") && filename.hasSuffix(".jsonl") {
+                return true
+            }
+        }
+        return false
     }
 
     /// Extracted teammate name (e.g. "team-lead", "researcher")

@@ -575,6 +575,7 @@ struct ChatView: View {
                 viewModel.exitChat()
                 viewModel.notchClose()
             } : nil,
+            onGoToTerminal: { focusTerminal() },
             warningText: hasAlways && !session.isInTmux ? "Always is only available in tmux" : nil,
             onApprove: { approvePermission() },
             onDeny: { denyPermission() }
@@ -1601,6 +1602,7 @@ struct ChatApprovalBar: View {
     let toolInput: [String: AnyCodable]?
     var message: String? = nil
     var onApproveAlways: (() -> Void)? = nil
+    var onGoToTerminal: (() -> Void)? = nil
     var warningText: String? = nil
     let onApprove: () -> Void
     let onDeny: () -> Void
@@ -1671,6 +1673,21 @@ struct ChatApprovalBar: View {
 
             // Buttons row
             HStack {
+                if let onGoToTerminal {
+                    Button {
+                        onGoToTerminal()
+                    } label: {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                            .frame(width: 32, height: 32)
+                            .background(Color.white.opacity(0.1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(showContent ? 1 : 0)
+                }
+
                 Spacer()
 
                 Button {
