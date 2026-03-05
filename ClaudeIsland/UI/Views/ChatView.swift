@@ -563,16 +563,18 @@ struct ChatView: View {
     // MARK: - Approval Bar
 
     private func approvalBar(tool: String) -> some View {
-        // Show "Always" only when Claude Code indicates permission_suggestions are available
+        // Show "Always" only when Claude Code indicates permission_suggestions are available AND in tmux
         let hasAlways = session.activePermission?.hasAlwaysOption ?? false
+        let canAlways = hasAlways && session.isInTmux
         return ChatApprovalBar(
             tool: tool,
             toolInput: session.activePermission?.toolInput,
             message: session.activePermission?.message,
-            onApproveAlways: hasAlways ? {
+            onApproveAlways: canAlways ? {
                 sessionMonitor.approvePermissionAlways(sessionId: sessionId)
                 viewModel.notchClose()
             } : nil,
+            warningText: hasAlways && !session.isInTmux ? "Always is only available in tmux" : nil,
             onApprove: { approvePermission() },
             onDeny: { denyPermission() }
         )
@@ -1594,6 +1596,7 @@ struct ChatApprovalBar: View {
     let toolInput: [String: AnyCodable]?
     var message: String? = nil
     var onApproveAlways: (() -> Void)? = nil
+    var warningText: String? = nil
     let onApprove: () -> Void
     let onDeny: () -> Void
 
@@ -1716,6 +1719,13 @@ struct ChatApprovalBar: View {
                 .buttonStyle(.plain)
                 .opacity(showAllowButton ? 1 : 0)
                 .scaleEffect(showAllowButton ? 1 : 0.8)
+            }
+
+            if let warningText {
+                Text(warningText)
+                    .font(.system(size: 10))
+                    .foregroundColor(Color(red: 0.85, green: 0.47, blue: 0.34))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
         .opacity(showContent ? 1 : 0)

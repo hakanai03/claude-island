@@ -71,7 +71,7 @@ class NotchViewModel: ObservableObject {
         case .peek:
             return CGSize(
                 width: min(screenRect.width * 0.4, 420),
-                height: 80
+                height: 110
             )
         case .chat:
             // Large size for chat view
@@ -207,15 +207,21 @@ class NotchViewModel: ObservableObject {
 
         switch status {
         case .opened:
-            if geometry.isPointOutsidePanel(location, size: openedSize) {
+            if case .peek(let session) = contentType {
+                // Peek mode: clicking inside notch or panel area → expand to full chat
+                // Clicking outside → close
+                if geometry.isPointInNotch(location) || geometry.isPointInOpenedPanel(location, size: openedSize) {
+                    peekTimer?.cancel()
+                    peekTimer = nil
+                    contentType = .chat(session)
+                } else {
+                    notchClose()
+                    repostClickAt(location)
+                }
+            } else if geometry.isPointOutsidePanel(location, size: openedSize) {
                 notchClose()
                 // Re-post the click so it reaches the window/app behind us
                 repostClickAt(location)
-            } else if case .peek(let session) = contentType {
-                // Clicking inside peek → expand to full chat
-                peekTimer?.cancel()
-                peekTimer = nil
-                contentType = .chat(session)
             } else if geometry.notchScreenRect.contains(location) {
                 // Clicking notch while opened - only close if NOT in chat mode
                 if !isInChatMode {

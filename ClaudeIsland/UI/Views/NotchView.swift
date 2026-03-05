@@ -23,6 +23,7 @@ struct NotchView: View {
     @State private var previousPendingIds: Set<String> = []
     @State private var previousWaitingForInputIds: Set<String> = []
     @State private var waitingForInputTimestamps: [String: Date] = [:]  // sessionId -> when it entered waitingForInput
+    @State private var recentlyCompactedIds: Set<String> = []  // sessions that were recently compacting
     @State private var isVisible: Bool = false
     @State private var isHovering: Bool = false
     @State private var isBouncing: Bool = false
@@ -443,13 +444,13 @@ struct NotchView: View {
         switch newStatus {
         case .opened, .popping:
             isVisible = true
-            // Clear waiting-for-input timestamps only when manually opened (user acknowledged)
+            // Only act on user-initiated opens (click/hover), not peek/notification
             if viewModel.openReason == .click || viewModel.openReason == .hover {
                 waitingForInputTimestamps.removeAll()
-            }
-            // Auto-navigate to first pending permission session's chat
-            if let firstPending = sessionMonitor.pendingInstances.first {
-                viewModel.showChat(for: firstPending)
+                // Auto-navigate to first pending permission session's chat
+                if let firstPending = sessionMonitor.pendingInstances.first {
+                    viewModel.showChat(for: firstPending)
+                }
             }
         case .closed:
             // Don't hide on non-notched devices - users need a visible target
@@ -465,27 +466,24 @@ struct NotchView: View {
     }
 
     private func handlePendingSessionsChange(_ sessions: [SessionState]) {
-        let currentIds = Set(sessions.map { $0.stableId })
-        let newPendingIds = currentIds.subtracting(previousPendingIds)
+        // Track by toolUseId (not sessionId) so new permissions for the same session are detected
+        let currentToolIds = Set(sessions.compactMap { $0.activePermission?.toolUseId })
+        let newToolIds = currentToolIds.subtracting(previousPendingIds)
 
-        // Only act on sessions with actual permission requests (not waitingForInput etc.)
+        // Only act on sessions with actual NEW permission requests
         let ignoredTools: Set<String> = ["EnterPlanMode", "ExitPlanMode"]
         let actionablePending = sessions.filter { session in
-            guard newPendingIds.contains(session.stableId) else { return false }
-            // Must have an active permission — skip waitingForInput and other non-permission states
             guard let permission = session.activePermission else { return false }
+            guard newToolIds.contains(permission.toolUseId) else { return false }
+            // Skip subagent sessions — their permissions are handled by the parent agent
+            guard !session.isSubagent else { return false }
             return !ignoredTools.contains(permission.toolName)
         }
 
         if !actionablePending.isEmpty {
             let firstNewPending = actionablePending.first
-            let terminalVisible = TerminalVisibilityDetector.isTerminalVisibleOnCurrentSpace()
 
-            if viewModel.status == .closed && !terminalVisible {
-                viewModel.notchOpen(reason: .notification)
-                // handleStatusChange will auto-navigate via pendingInstances
-            } else if viewModel.status == .closed && terminalVisible, let pending = firstNewPending {
-                // Terminal visible — show compact peek instead of full open
+            if viewModel.status == .closed, let pending = firstNewPending {
                 viewModel.startPeek(for: pending)
             } else if viewModel.status == .opened, let pending = firstNewPending {
                 // Already open — navigate to the new pending session
@@ -493,10 +491,9 @@ struct NotchView: View {
             }
 
             // Play permission sound for newly pending sessions
-            let newlyPendingSessions = sessions.filter { newPendingIds.contains($0.stableId) }
             if let soundName = AppSettings.permissionSound.soundName {
                 Task {
-                    let shouldPlay = await shouldPlayNotificationSound(for: newlyPendingSessions)
+                    let shouldPlay = await shouldPlayNotificationSound(for: actionablePending)
                     if shouldPlay {
                         await MainActor.run {
                             NSSound(named: soundName)?.play()
@@ -506,10 +503,14 @@ struct NotchView: View {
             }
         }
 
-        previousPendingIds = currentIds
+        previousPendingIds = currentToolIds
     }
 
     private func handleWaitingForInputChange(_ instances: [SessionState]) {
+        // Track sessions currently in compacting phase
+        let currentlyCompacting = Set(instances.filter { $0.phase == .compacting }.map { $0.stableId })
+        recentlyCompactedIds.formUnion(currentlyCompacting)
+
         // Get sessions that are now waiting for input
         let waitingForInputSessions = instances.filter { $0.phase == .waitingForInput }
         let currentIds = Set(waitingForInputSessions.map { $0.stableId })
@@ -530,19 +531,29 @@ struct NotchView: View {
         // Bounce the notch when a session newly enters waitingForInput state
         if !newWaitingIds.isEmpty {
             let capturedNewWaitingIds = newWaitingIds
+            let capturedCompactedIds = recentlyCompactedIds
 
-            // Debounce: wait 1.5s and verify sessions are still waiting
-            // (SubagentStop/PostToolUse can cause transient waitingForInput)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            // Clear recently compacted IDs that are now waiting (consumed)
+            recentlyCompactedIds.subtract(newWaitingIds)
+
+            // Debounce: wait 3s and verify sessions are still waiting
+            // (SubagentStop/PostToolUse can cause transient waitingForInput that lasts 1-2s)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
                 let stillWaiting = sessionMonitor.instances.filter {
                     $0.phase == .waitingForInput && capturedNewWaitingIds.contains($0.stableId)
                 }
-                guard !stillWaiting.isEmpty else { return }
+                // Only notify for main agent sessions that have no active subagents
+                // and were not just compacting
+                let mainAgentDone = stillWaiting.filter {
+                    !$0.isSubagent && !$0.subagentState.hasActiveSubagent
+                        && !capturedCompactedIds.contains($0.stableId)
+                }
+                guard !mainAgentDone.isEmpty else { return }
 
                 // Play notification sound if the session is not actively focused
                 if let soundName = AppSettings.notificationSound.soundName {
                     Task {
-                        let shouldPlaySound = await shouldPlayNotificationSound(for: stillWaiting)
+                        let shouldPlaySound = await shouldPlayNotificationSound(for: mainAgentDone)
                         if shouldPlaySound {
                             await MainActor.run {
                                 NSSound(named: soundName)?.play()
@@ -572,6 +583,70 @@ struct NotchView: View {
 
     @ViewBuilder
     private func peekContentView(session: SessionState) -> some View {
+        let isAsk = session.activePermission?.toolName == "AskUserQuestion"
+
+        if isAsk, let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
+            peekAskContent(session: session, question: parsed)
+        } else {
+            peekPermissionContent(session: session)
+        }
+    }
+
+    /// Peek content for AskUserQuestion: question text + option chips
+    @ViewBuilder
+    private func peekAskContent(session: SessionState, question: AskQuestionInput) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // Question text (tap to expand to full chat)
+            Button {
+                viewModel.showChat(for: session)
+            } label: {
+                Text(question.question)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            // Option chips
+            if !question.options.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
+                        Button {
+                            sessionMonitor.answerQuestion(
+                                sessionId: session.sessionId,
+                                answer: String(index + 1)
+                            )
+                            viewModel.notchClose()
+                        } label: {
+                            Text(option.label)
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.9))
+                                .lineLimit(1)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.white.opacity(0.12))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .strokeBorder(Color.white.opacity(0.15), lineWidth: 1)
+                                        )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    /// Peek content for regular permission: tool name + Allow/Always buttons
+    @ViewBuilder
+    private func peekPermissionContent(session: SessionState) -> some View {
         let toolName: String = {
             guard let lastTool = ChatHistoryManager.shared.history(for: session.sessionId)
                 .compactMap({ item -> ToolCallItem? in
@@ -586,57 +661,69 @@ struct NotchView: View {
         }()
 
         let hasAlways = session.activePermission?.hasAlwaysOption ?? false
+        let canAlways = session.isInTmux
 
-        HStack(spacing: 8) {
-            // Tool name (tap to expand to full chat)
-            Button {
-                viewModel.showChat(for: session)
-            } label: {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(Color.orange)
-                        .frame(width: 6, height: 6)
-                    Text(toolName)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.8))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            .buttonStyle(.plain)
-
-            Spacer(minLength: 4)
-
-            // Allow button
-            Button {
-                sessionMonitor.approvePermission(sessionId: session.sessionId)
-                viewModel.notchClose()
-            } label: {
-                Text("Allow")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.black)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.white.opacity(0.9))
-                    .clipShape(Capsule())
-            }
-            .buttonStyle(.plain)
-
-            // Always button (only when available)
-            if hasAlways {
+        VStack(spacing: 4) {
+            HStack(spacing: 8) {
+                // Tool name (tap to expand to full chat)
                 Button {
-                    sessionMonitor.approvePermissionAlways(sessionId: session.sessionId)
+                    viewModel.showChat(for: session)
+                } label: {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text(toolName)
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.8))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 4)
+
+                // Allow button
+                Button {
+                    sessionMonitor.approvePermission(sessionId: session.sessionId)
                     viewModel.notchClose()
                 } label: {
-                    Text("Always")
+                    Text("Allow")
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
+                        .foregroundColor(.black)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .background(Color.white.opacity(0.2))
+                        .background(Color.white.opacity(0.9))
                         .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
+
+                // Always button (only in tmux)
+                if hasAlways && canAlways {
+                    Button {
+                        sessionMonitor.approvePermissionAlways(sessionId: session.sessionId)
+                        viewModel.notchClose()
+                    } label: {
+                        Text("Always")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.9))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.white.opacity(0.2))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            // tmux-only notice for Always
+            if hasAlways && !canAlways {
+                Text("Always is only available in tmux")
+                    .font(.system(size: 9))
+                    .foregroundColor(Color(red: 0.85, green: 0.47, blue: 0.34))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.top, 4)
             }
         }
         .padding(.horizontal, 8)
