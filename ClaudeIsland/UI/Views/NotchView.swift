@@ -685,8 +685,11 @@ struct NotchView: View {
     /// Peek content for regular permission: tool name + Allow/Always buttons
     @ViewBuilder
     private func peekPermissionContent(session: SessionState) -> some View {
+        let isTeammateRequest = session.activePermission?.message != nil
+            && (session.activePermission?.toolInput?.isEmpty ?? true)
+
         let toolName: String = {
-            // Try ChatHistoryManager first
+            // Try ChatHistoryManager first (works for direct permissions with socket)
             if let lastTool = ChatHistoryManager.shared.history(for: session.sessionId)
                 .compactMap({ item -> ToolCallItem? in
                     if case .toolCall(let tool) = item.type { return tool }
@@ -697,17 +700,10 @@ struct NotchView: View {
                 let preview = lastTool.inputPreview
                 return preview.isEmpty ? name : "\(name)(\(preview))"
             }
-            // Fallback: extract from activePermission (covers team-mode forwarded permissions)
+            // Fallback: use permission context directly
             if let perm = session.activePermission {
                 let name = MCPToolFormatter.formatToolName(perm.toolName)
-                if let command = perm.toolInput?["command"]?.value as? String {
-                    let firstLine = command.components(separatedBy: "\n").first ?? command
-                    return "\(name)(\(String(firstLine.prefix(60))))"
-                }
-                if let desc = perm.toolInput?["description"]?.value as? String {
-                    return "\(name): \(String(desc.prefix(50)))"
-                }
-                return name
+                return isTeammateRequest ? "Teammate: \(name)" : name
             }
             return "Permission required"
         }()

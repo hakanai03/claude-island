@@ -506,6 +506,12 @@ struct ChatView: View {
                             .lineLimit(1)
                         if let toolName = pending.pendingToolName {
                             HStack(spacing: 4) {
+                                if pending.activePermission?.message != nil
+                                    && (pending.activePermission?.toolInput?.isEmpty ?? true) {
+                                    Text("Teammate:")
+                                        .font(.system(size: 10, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.4))
+                                }
                                 Text(MCPToolFormatter.formatToolName(toolName))
                                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                                     .foregroundColor(TerminalColors.amber.opacity(0.9))
@@ -566,10 +572,13 @@ struct ChatView: View {
         // Show "Always" only when Claude Code indicates permission_suggestions are available AND in tmux
         let hasAlways = session.activePermission?.hasAlwaysOption ?? false
         let canAlways = hasAlways && session.isInTmux
+        let isTeammate = session.activePermission?.message != nil
+            && (session.activePermission?.toolInput?.isEmpty ?? true)
         return ChatApprovalBar(
             tool: tool,
             toolInput: session.activePermission?.toolInput,
             message: session.activePermission?.message,
+            isTeammateRequest: isTeammate,
             onApproveAlways: canAlways ? {
                 sessionMonitor.approvePermissionAlways(sessionId: sessionId)
                 viewModel.exitChat()
@@ -1601,6 +1610,7 @@ struct ChatApprovalBar: View {
     let tool: String
     let toolInput: [String: AnyCodable]?
     var message: String? = nil
+    var isTeammateRequest: Bool = false
     var onApproveAlways: (() -> Void)? = nil
     var onGoToTerminal: (() -> Void)? = nil
     var warningText: String? = nil
@@ -1655,7 +1665,12 @@ struct ChatApprovalBar: View {
             }
 
             // Tool info
-            HStack {
+            HStack(spacing: 6) {
+                if isTeammateRequest {
+                    Text("Teammate:")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.5))
+                }
                 Text(MCPToolFormatter.formatToolName(tool))
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundColor(TerminalColors.amber)
