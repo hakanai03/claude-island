@@ -572,6 +572,7 @@ struct ChatView: View {
             message: session.activePermission?.message,
             onApproveAlways: canAlways ? {
                 sessionMonitor.approvePermissionAlways(sessionId: sessionId)
+                viewModel.exitChat()
                 viewModel.notchClose()
             } : nil,
             warningText: hasAlways && !session.isInTmux ? "Always is only available in tmux" : nil,
@@ -638,16 +639,20 @@ struct ChatView: View {
 
     private func approvePermission() {
         sessionMonitor.approvePermission(sessionId: sessionId)
+        viewModel.exitChat()  // Clear saved chat before closing to prevent stale approval restoration
         viewModel.notchClose()
     }
 
     private func denyPermission() {
         sessionMonitor.denyPermission(sessionId: sessionId, reason: nil)
+        viewModel.exitChat()
         viewModel.notchClose()
     }
 
     private func answerQuestion(_ answer: String) {
         sessionMonitor.answerQuestion(sessionId: sessionId, answer: answer)
+        viewModel.exitChat()
+        viewModel.notchClose()
     }
 
     private func sendMessage() {
