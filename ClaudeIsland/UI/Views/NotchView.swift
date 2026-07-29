@@ -178,7 +178,15 @@ struct NotchView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Outer container does NOT receive hits - only the notch content does
+            // Scrim: the window is a fixed-size envelope, so clicks inside it
+            // but outside the visible panel dismiss (like tapping outside a modal)
+            if viewModel.status == .opened {
+                Color.black.opacity(0.001)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { viewModel.notchClose() }
+            }
+
             VStack(spacing: 0) {
                 notchLayout
                     .frame(

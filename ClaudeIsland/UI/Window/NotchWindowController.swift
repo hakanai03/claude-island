@@ -2,28 +2,54 @@
 //  NotchWindowController.swift
 //  ClaudeIsland
 //
-//  Controls the notch window positioning and lifecycle.
-//  The window is kept just large enough for the currently visible content
-//  (notch + activity bar when closed, panel + shadow margin when opened),
-//  anchored top-center. Everything outside the window naturally receives
-//  clicks — no pass-through hacks needed.
+//  Controls the notch windows and lifecycle.
+//
+//  Two windows, neither of which ever resizes while hosting SwiftUI:
+//  - panelWindow: fixed-size envelope (max panel bounds), top-center, hosts
+//    the SwiftUI NotchView. Ignores mouse events while closed so clicks pass
+//    through; accepts them while opened. Never resizing avoids macOS 26's
+//    fatal SwiftUI-in-layout-pass re-entrancy when NSHostingView windows
+//    change frame.
+//  - hotspotWindow: a tiny plain-AppKit window over the notch (+ activity
+//    bar) that provides hover/click detection while the panel is closed.
+//    It has no SwiftUI, so resizing it (activity bar width) is safe.
 //
 
 import AppKit
 import Combine
 import SwiftUI
 
+/// Plain view over the notch: forwards hover and click to the view model
+private final class NotchHotspotView: NSView {
+    var onHover: ((Bool) -> Void)?
+    var onClick: (() -> Void)?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
+    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 class NotchWindowController: NSWindowController {
     let viewModel: NotchViewModel
     private let screen: NSScreen
     private var cancellables = Set<AnyCancellable>()
-    private var pendingShrink: DispatchWorkItem?
-    private var frameUpdateScheduled = false
+    private var hotspotWindow: NSPanel?
 
-    /// Margin around the visible content for shadow and hover slack
-    private static let contentMargin: CGFloat = 24
-    /// Horizontal padding the opened panel adds around its content (corner radii)
-    private static let openedHorizontalPadding: CGFloat = 52
+    /// Fixed envelope for the panel window: large enough for every opened
+    /// content size (chat 600x580 + corner padding + shadow margins)
+    private static let envelopeSize = NSSize(width: 700, height: 750)
 
     init(screen: NSScreen) {
         self.screen = screen
@@ -31,8 +57,7 @@ class NotchWindowController: NSWindowController {
         let screenFrame = screen.frame
         let notchSize = screen.notchSize
 
-        // Height envelope used by NotchGeometry (not the actual window height)
-        let windowHeight: CGFloat = 750
+        let windowHeight: CGFloat = Self.envelopeSize.height
 
         // Device notch rect - positioned at center
         let deviceNotchRect = CGRect(
@@ -50,9 +75,16 @@ class NotchWindowController: NSWindowController {
             hasPhysicalNotch: screen.hasPhysicalNotch
         )
 
-        // Create the window (initial frame: closed state)
+        // Fixed panel window frame — never changes after this
+        let panelFrame = NSRect(
+            x: (screenFrame.minX + screenFrame.maxX - Self.envelopeSize.width) / 2,
+            y: screenFrame.maxY - Self.envelopeSize.height,
+            width: Self.envelopeSize.width,
+            height: Self.envelopeSize.height
+        )
+
         let notchWindow = NotchPanel(
-            contentRect: .zero,
+            contentRect: panelFrame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -62,35 +94,44 @@ class NotchWindowController: NSWindowController {
 
         let hostingController = NotchViewController(viewModel: viewModel)
         notchWindow.contentViewController = hostingController
+        notchWindow.setFrame(panelFrame, display: true)
 
-        notchWindow.setFrame(desiredFrame(), display: false)
+        // Closed: clicks pass through the (invisible) envelope.
+        // Opened: panel content takes clicks; outside-panel clicks inside the
+        // envelope are handled by the SwiftUI scrim (close).
+        notchWindow.ignoresMouseEvents = true
 
-        // Track focus behavior on open
+        setupHotspotWindow()
+
         viewModel.$status
             .receive(on: DispatchQueue.main)
-            .sink { [weak notchWindow, weak viewModel] status in
-                if status == .opened, viewModel?.openReason != .notification {
-                    // Don't steal focus when opened by notification (task finished).
-                    // Deferred: activating + makeKey while the open-resize is being
-                    // applied can trip AppKit's layout re-entrancy guard.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                        guard viewModel?.status == .opened else { return }
+            .sink { [weak self, weak notchWindow, weak viewModel] status in
+                switch status {
+                case .opened:
+                    notchWindow?.ignoresMouseEvents = false
+                    self?.hotspotWindow?.orderOut(nil)
+                    if viewModel?.openReason != .notification {
+                        // Don't steal focus when opened by notification
                         NSApp.activate(ignoringOtherApps: false)
                         notchWindow?.makeKey()
                     }
+                case .closed, .popping:
+                    notchWindow?.ignoresMouseEvents = true
+                    self?.hotspotWindow?.orderFrontRegardless()
                 }
             }
             .store(in: &cancellables)
 
-        // Resize the window whenever the content envelope may have changed
-        // (status, content type, dynamic panel sizes, activity bar width)
-        viewModel.objectWillChange
-            .sink { [weak self] _ in self?.scheduleFrameUpdate() }
+        // The activity bar widens the clickable notch area while closed
+        viewModel.$closedExpansionWidth
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] width in
+                self?.updateHotspotFrame(expansionWidth: width)
+            }
             .store(in: &cancellables)
 
-        // Close on clicks outside the window. Global monitor: clicks in other
-        // apps (they already received the click — no repost needed).
-        // Local monitor: clicks inside our window are filtered by the frame check.
+        // Close when clicking outside the envelope (other apps' windows —
+        // they already received the click, so nothing needs re-posting)
         EventMonitors.shared.mouseDown
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -110,6 +151,60 @@ class NotchWindowController: NSWindowController {
         #if DEBUG
         setupUITestHook()
         #endif
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    // MARK: - Hotspot Window
+
+    private func setupHotspotWindow() {
+        let hotspot = NSPanel(
+            contentRect: hotspotFrame(expansionWidth: viewModel.closedExpansionWidth),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        hotspot.isFloatingPanel = true
+        hotspot.isOpaque = false
+        hotspot.backgroundColor = .clear
+        hotspot.hasShadow = false
+        hotspot.isMovable = false
+        hotspot.collectionBehavior = [.fullScreenAuxiliary, .stationary, .canJoinAllSpaces, .ignoresCycle]
+        hotspot.level = .mainMenu + 4
+        hotspot.ignoresMouseEvents = false
+
+        let view = NotchHotspotView()
+        view.onHover = { [weak self] hovering in
+            self?.viewModel.handleHover(hovering)
+        }
+        view.onClick = { [weak self] in
+            guard let self, self.viewModel.status != .opened else { return }
+            self.viewModel.notchOpen(reason: .click)
+        }
+        hotspot.contentView = view
+
+        hotspot.orderFrontRegardless()
+        hotspotWindow = hotspot
+    }
+
+    private func hotspotFrame(expansionWidth: CGFloat) -> NSRect {
+        let screenFrame = screen.frame
+        let notch = viewModel.deviceNotchRect
+        let width = notch.width + expansionWidth + 20
+        let height = notch.height + 10
+        return NSRect(
+            x: (screenFrame.minX + screenFrame.maxX - width) / 2,
+            y: screenFrame.maxY - height,
+            width: width,
+            height: height
+        )
+    }
+
+    private func updateHotspotFrame(expansionWidth: CGFloat) {
+        // Plain AppKit view — resizing this window is safe
+        hotspotWindow?.setFrame(hotspotFrame(expansionWidth: expansionWidth), display: false)
     }
 
     #if DEBUG
@@ -220,91 +315,4 @@ class NotchWindowController: NSWindowController {
         }
     }
     #endif
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    // MARK: - Window Frame Management
-
-    /// Coalesce frame updates: objectWillChange fires before state mutates,
-    /// so apply on the next runloop turn.
-    private func scheduleFrameUpdate() {
-        guard !frameUpdateScheduled else { return }
-        frameUpdateScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.frameUpdateScheduled = false
-            self.updateWindowFrame()
-        }
-    }
-
-    private func desiredFrame() -> NSRect {
-        let screenFrame = screen.frame
-        let margin = Self.contentMargin
-        let width: CGFloat
-        let height: CGFloat
-
-        switch viewModel.status {
-        case .opened:
-            let panel = viewModel.openedSize
-            width = panel.width + Self.openedHorizontalPadding + margin * 2
-            height = panel.height + margin * 2
-        case .closed, .popping:
-            let notch = viewModel.deviceNotchRect
-            width = notch.width + viewModel.closedExpansionWidth + margin * 2
-            // Extra headroom below the notch for the bounce animation
-            height = notch.height + 20
-        }
-
-        return NSRect(
-            x: (screenFrame.minX + screenFrame.maxX - width) / 2,
-            y: screenFrame.maxY - height,
-            width: width,
-            height: height
-        )
-    }
-
-    /// Grow immediately (content must never be clipped), shrink after the
-    /// close/collapse animation has finished.
-    private func updateWindowFrame() {
-        guard let window = self.window else { return }
-        let target = desiredFrame()
-        guard target != window.frame else { return }
-
-        pendingShrink?.cancel()
-        pendingShrink = nil
-
-        let current = window.frame
-        let growsWidth = target.width > current.width
-        let growsHeight = target.height > current.height
-        let shrinksWidth = target.width < current.width
-        let shrinksHeight = target.height < current.height
-
-        if growsWidth || growsHeight {
-            // Apply the union so no dimension shrinks mid-animation
-            let unionWidth = max(target.width, current.width)
-            let unionHeight = max(target.height, current.height)
-            let screenFrame = screen.frame
-            let union = NSRect(
-                x: (screenFrame.minX + screenFrame.maxX - unionWidth) / 2,
-                y: screenFrame.maxY - unionHeight,
-                width: unionWidth,
-                height: unionHeight
-            )
-            // display: false — synchronous display work inside setFrame can
-            // land in the AppKit display cycle, where SwiftUI's reaction to
-            // the geometry change re-enters the constraints pass and crashes
-            window.setFrame(union, display: false)
-        }
-
-        if shrinksWidth || shrinksHeight {
-            let work = DispatchWorkItem { [weak self] in
-                guard let self, let window = self.window else { return }
-                window.setFrame(self.desiredFrame(), display: false)
-            }
-            pendingShrink = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
-        }
-    }
 }
