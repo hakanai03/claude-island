@@ -520,8 +520,12 @@ struct NotchView: View {
             if viewModel.status == .closed, let pending = firstNewPending {
                 viewModel.startPeek(for: pending)
             } else if viewModel.status == .opened, let pending = firstNewPending {
-                // Already open — navigate to the new pending session
-                viewModel.showChat(for: pending)
+                if case .peek = viewModel.contentType {
+                    // Peek shows the live input queue — new items appear in place
+                } else {
+                    // Already open — navigate to the new pending session
+                    viewModel.showChat(for: pending)
+                }
             }
 
             // Play permission sound for newly pending sessions
@@ -538,6 +542,12 @@ struct NotchView: View {
         }
 
         previousPendingIds = currentToolIds
+
+        // Keep the peek queue sized and alive while input is pending
+        viewModel.pendingInputCount = sessions.count
+        if sessions.isEmpty, viewModel.status == .opened, case .peek = viewModel.contentType {
+            viewModel.notchClose()
+        }
     }
 
     private func handleWaitingForInputChange(_ instances: [SessionState]) {
@@ -670,8 +680,39 @@ struct NotchView: View {
 
     // MARK: - Peek Content View
 
+    /// Peek shows the live input queue: every session waiting on the user,
+    /// stacked, so nothing needs to be hunted down in individual chats
     @ViewBuilder
     private func peekContentView(session: SessionState) -> some View {
+        let queue = sessionMonitor.pendingInstances
+        if queue.count > 1 {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(queue) { pending in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(pending.friendlyProjectName)
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.35))
+                                .padding(.horizontal, 8)
+                            peekRequestContent(session: pending)
+                        }
+                        .padding(.vertical, 4)
+
+                        if pending.stableId != queue.last?.stableId {
+                            Divider()
+                                .background(Color.white.opacity(0.08))
+                                .padding(.horizontal, 8)
+                        }
+                    }
+                }
+            }
+        } else {
+            peekRequestContent(session: queue.first ?? session)
+        }
+    }
+
+    @ViewBuilder
+    private func peekRequestContent(session: SessionState) -> some View {
         let isAsk = session.activePermission?.toolName == "AskUserQuestion"
 
         if isAsk, let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
@@ -704,11 +745,11 @@ struct NotchView: View {
                 HStack(spacing: 6) {
                     ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
                         Button {
+                            // Peek closes automatically once the queue empties
                             sessionMonitor.answerQuestion(
                                 sessionId: session.sessionId,
                                 answer: String(index + 1)
                             )
-                            viewModel.notchClose()
                         } label: {
                             Text(option.label)
                                 .font(.system(size: 10, weight: .medium))
@@ -787,10 +828,9 @@ struct NotchView: View {
 
                 Spacer(minLength: 4)
 
-                // Allow button
+                // Allow button (peek closes automatically once the queue empties)
                 Button {
                     sessionMonitor.approvePermission(sessionId: session.sessionId)
-                    viewModel.notchClose()
                 } label: {
                     Text("Allow")
                         .font(.system(size: 11, weight: .medium))
@@ -806,7 +846,6 @@ struct NotchView: View {
                 if hasAlways && canAlways {
                     Button {
                         sessionMonitor.approvePermissionAlways(sessionId: session.sessionId)
-                        viewModel.notchClose()
                     } label: {
                         Text("Always")
                             .font(.system(size: 11, weight: .medium))

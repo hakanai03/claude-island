@@ -49,6 +49,10 @@ class NotchViewModel: ObservableObject {
     @Published var isHovering: Bool = false
     @Published var closedExpansionWidth: CGFloat = 0
 
+    /// Number of sessions currently needing user input (fed by NotchView).
+    /// Sizes the peek queue and keeps it open while input is pending.
+    @Published var pendingInputCount: Int = 0
+
     // MARK: - Dependencies
 
     private let screenSelector = ScreenSelector.shared
@@ -69,9 +73,11 @@ class NotchViewModel: ObservableObject {
     var openedSize: CGSize {
         switch contentType {
         case .peek:
+            // Stacked input queue: grow with pending items, capped
+            let extraRows = max(0, pendingInputCount - 1)
             return CGSize(
                 width: min(screenRect.width * 0.4, 420),
-                height: 110
+                height: min(110 + CGFloat(extraRows) * 84, 360)
             )
         case .chat:
             // Large size for chat view
@@ -212,7 +218,9 @@ class NotchViewModel: ObservableObject {
 
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if case .peek = self.contentType {
+            // Stay open while input is still pending — NotchView closes the
+            // peek when the queue empties
+            if case .peek = self.contentType, self.pendingInputCount == 0 {
                 self.notchClose()
             }
         }
