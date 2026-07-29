@@ -847,6 +847,15 @@ struct NotchView: View {
             if !isFocused {
                 return true
             }
+
+            // Terminal app is frontmost, but a tmux pane in a non-active
+            // window (or detached session) is still invisible — notify
+            if let tty = session.tty,
+               let visible = await ClaudeSessionMonitor.isTmuxPaneVisible(tty: tty),
+               !visible {
+                Self.soundLogger.info("pane hidden in tmux — playing despite focused terminal")
+                return true
+            }
         }
 
         Self.soundLogger.info("sound suppressed: all target sessions focused")

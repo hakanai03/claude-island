@@ -262,6 +262,30 @@ class ClaudeSessionMonitor: ObservableObject {
         return nil
     }
 
+    /// Whether a tmux pane is actually visible: its window is the active one
+    /// in an attached session. Returns nil if the tty is not a tmux pane.
+    static func isTmuxPaneVisible(tty: String) async -> Bool? {
+        guard let tmuxPath = await TmuxPathFinder.shared.getTmuxPath() else {
+            return nil
+        }
+
+        guard let output = try? await ProcessExecutor.shared.run(
+            tmuxPath,
+            arguments: ["list-panes", "-a", "-F", "#{pane_tty} #{window_active} #{session_attached}"]
+        ) else {
+            return nil
+        }
+
+        for line in output.components(separatedBy: "\n") {
+            let parts = line.components(separatedBy: " ")
+            guard parts.count >= 3 else { continue }
+            if parts[0].replacingOccurrences(of: "/dev/", with: "") == tty {
+                return parts[1] == "1" && (Int(parts[2]) ?? 0) > 0
+            }
+        }
+        return nil
+    }
+
     // MARK: - State Update
 
     private func updateFromSessions(_ sessions: [SessionState]) {
