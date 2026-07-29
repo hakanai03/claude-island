@@ -45,6 +45,18 @@
   （エラーも出ない）。カーソル位置の変化で効いているか必ず確認する。
 - probe座標は数pxでフレークする。グリッドで撃って成功条件（socket応答/フレーム変化）で判定する。
 
+## 2026-07-29 (最終盤): NSHostingView × ウインドウ動的リサイズのクラッシュ3連
+
+macOS 26でNSHostingViewを載せたウインドウを自前でsetFrameし続けると、SwiftUIの再無効化が
+AppKitのレイアウト/制約パス内に食い込み `NSInternalInconsistencyException` で落ちる。3経路あった:
+1. `updateConstraints`内のウインドウ理想サイズ管理 → `sizingOptions = []` で無効化
+2. リサイズ時のsafe area角インセット再計算 → `safeAreaRegions = []` で無効化
+3. `rootTransform`のウインドウ内ジオメトリ監視 → `setFrame(display: false)` で表示処理を
+   サイクル外へ逃がす（macOS 26のUpdateCycleドライバはdispatch mainブロックをサイクル内で
+   処理し得るため、display: trueだと同期表示がパス内に食い込む）
+- クラッシュ再現は「アニメーション常時稼働セッション + 連続ask」のストレスで行う
+  （単発では再現しないレース）。クラッシュレポートは lastExceptionBacktrace を見る。
+
 ## 環境の罠
 
 - ユーザーのシェルプロファイルに `log` 関数があり `/usr/bin/log` を隠す → unified log操作はフルパスで。

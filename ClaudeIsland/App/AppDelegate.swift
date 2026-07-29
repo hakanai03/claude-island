@@ -34,6 +34,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // macOS 26's SwiftUI can schedule constraint updates inside AppKit's
+        // layout pass when our window resizes (safe-area / rootTransform
+        // geometry observations), which trips a re-entrancy guard exception.
+        // These are transient scheduling guards that self-heal on the next
+        // cycle — let AppKit catch them at the runloop like it historically
+        // did instead of aborting the app.
+        UserDefaults.standard.register(defaults: ["NSApplicationCrashOnExceptions": false])
+
         if !ensureSingleInstance() {
             NSApplication.shared.terminate(nil)
             return
