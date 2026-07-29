@@ -543,9 +543,11 @@ struct NotchView: View {
 
         previousPendingIds = currentToolIds
 
-        // Keep the peek queue sized and alive while input is pending
-        viewModel.pendingInputCount = sessions.count
-        if sessions.isEmpty, viewModel.status == .opened, case .peek = viewModel.contentType {
+        // Keep the peek queue sized and alive while permissions/questions are
+        // pending (sessions merely waiting for input don't belong in the queue)
+        let queueCount = sessions.filter { $0.activePermission != nil }.count
+        viewModel.pendingInputCount = queueCount
+        if queueCount == 0, viewModel.status == .opened, case .peek = viewModel.contentType {
             viewModel.notchClose()
         }
     }
@@ -684,7 +686,9 @@ struct NotchView: View {
     /// stacked, so nothing needs to be hunted down in individual chats
     @ViewBuilder
     private func peekContentView(session: SessionState) -> some View {
-        let queue = sessionMonitor.pendingInstances
+        // pendingInstances also contains sessions merely waiting for input —
+        // the queue is only for sessions with an actual permission/question
+        let queue = sessionMonitor.pendingInstances.filter { $0.activePermission != nil }
         if queue.count > 1 {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
