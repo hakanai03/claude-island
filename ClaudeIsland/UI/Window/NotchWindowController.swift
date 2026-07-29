@@ -70,9 +70,14 @@ class NotchWindowController: NSWindowController {
             .receive(on: DispatchQueue.main)
             .sink { [weak notchWindow, weak viewModel] status in
                 if status == .opened, viewModel?.openReason != .notification {
-                    // Don't steal focus when opened by notification (task finished)
-                    NSApp.activate(ignoringOtherApps: false)
-                    notchWindow?.makeKey()
+                    // Don't steal focus when opened by notification (task finished).
+                    // Deferred: activating + makeKey while the open-resize is being
+                    // applied can trip AppKit's layout re-entrancy guard.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        guard viewModel?.status == .opened else { return }
+                        NSApp.activate(ignoringOtherApps: false)
+                        notchWindow?.makeKey()
+                    }
                 }
             }
             .store(in: &cancellables)
