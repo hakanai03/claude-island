@@ -34,10 +34,18 @@ class ClaudeSessionMonitor: ObservableObject {
     // MARK: - Monitoring Lifecycle
 
     func startMonitoring() {
-        // Periodically settle sessions whose Stop event was lost
+        // Periodic reconciliation: settle lost-Stop phases and reap sessions
+        // whose claude process died without a SessionEnd hook (kill, crash)
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
             Task {
-                await SessionStore.shared.reconcileStalePhases()
+                let removed = await SessionStore.shared.reconcileSessions()
+                if !removed.isEmpty {
+                    await MainActor.run {
+                        for sessionId in removed {
+                            InterruptWatcherManager.shared.stopWatching(sessionId: sessionId)
+                        }
+                    }
+                }
             }
         }
 

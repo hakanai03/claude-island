@@ -1113,6 +1113,38 @@ actor SessionStore {
 
     // MARK: - Reconciliation
 
+    /// Periodic drift correction for event-driven state:
+    /// - sessions whose process is gone were killed without a SessionEnd
+    ///   hook — remove them so closed conversations don't linger forever
+    /// - busy phases with no events for a long time lost their Stop — settle
+    /// Returns removed session ids so callers can clean up watchers.
+    func reconcileSessions() -> [String] {
+        reconcileStalePhases()
+
+        var removed: [String] = []
+        for (id, session) in sessions {
+            let dead: Bool
+            if let pid = session.pid {
+                // Signal 0 probes existence; ESRCH means the process is gone
+                dead = kill(pid_t(pid), 0) != 0 && errno == ESRCH
+            } else {
+                // No pid to probe (shouldn't happen for real sessions):
+                // reap after long inactivity
+                dead = Date().timeIntervalSince(session.lastActivity) > 1800
+            }
+            if dead {
+                Self.logger.info("Reaping session \(id.prefix(8), privacy: .public) — process \(session.pid.map(String.init) ?? "?", privacy: .public) is gone")
+                sessions.removeValue(forKey: id)
+                cancelPendingSync(sessionId: id)
+                removed.append(id)
+            }
+        }
+        if !removed.isEmpty {
+            publishState()
+        }
+        return removed
+    }
+
     /// Clear phases that can no longer be true. Hook-driven state has no
     /// second chance: if a Stop event is lost (app restart, socket hiccup)
     /// a session stays "processing" forever. A processing/compacting session
