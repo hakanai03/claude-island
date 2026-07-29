@@ -38,6 +38,11 @@ class NotchViewController: NSViewController {
         // from SwiftUI's ideal size inside updateConstraints, which re-enters
         // the constraints pass and crashes (NSInternalInconsistencyException).
         hostingView.sizingOptions = []
+        // The window sits over the camera housing; safe-area tracking makes
+        // SwiftUI invalidate during window resizes inside the layout pass
+        // (invalidateSafeAreaCornerInsets), which also crashes. The overlay
+        // positions everything itself, so drop safe-area handling entirely.
+        hostingView.safeAreaRegions = []
         self.view = hostingView
     }
 }
