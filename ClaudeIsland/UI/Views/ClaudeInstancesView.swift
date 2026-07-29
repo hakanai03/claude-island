@@ -111,17 +111,12 @@ struct ClaudeInstancesView: View {
                 if !inputQueue.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(inputQueue) { pending in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(pending.friendlyProjectName)
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.35))
-                                    .padding(.horizontal, 8)
-                                InputRequestRow(
-                                    session: pending,
-                                    sessionMonitor: sessionMonitor,
-                                    viewModel: viewModel
-                                )
-                            }
+                            InputRequestRow(
+                                session: pending,
+                                sessionMonitor: sessionMonitor,
+                                viewModel: viewModel,
+                                showsSessionLabel: true
+                            )
                             .padding(.vertical, 4)
                         }
                     }

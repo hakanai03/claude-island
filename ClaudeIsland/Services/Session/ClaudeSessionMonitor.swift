@@ -34,6 +34,13 @@ class ClaudeSessionMonitor: ObservableObject {
     // MARK: - Monitoring Lifecycle
 
     func startMonitoring() {
+        // Periodically settle sessions whose Stop event was lost
+        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
+            Task {
+                await SessionStore.shared.reconcileStalePhases()
+            }
+        }
+
         HookSocketServer.shared.start(
             onEvent: { event in
                 // Skip Notification(permission_prompt) if session already has a socket-based

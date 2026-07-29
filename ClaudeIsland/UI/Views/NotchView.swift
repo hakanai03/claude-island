@@ -701,13 +701,12 @@ struct NotchView: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(queue) { pending in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(pending.friendlyProjectName)
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(.white.opacity(0.35))
-                                .padding(.horizontal, 8)
-                            peekRequestContent(session: pending)
-                        }
+                        InputRequestRow(
+                            session: pending,
+                            sessionMonitor: sessionMonitor,
+                            viewModel: viewModel,
+                            showsSessionLabel: true
+                        )
                         .padding(.vertical, 4)
 
                         if pending.stableId != queue.last?.stableId {
@@ -766,13 +765,28 @@ struct InputRequestRow: View {
     let session: SessionState
     @ObservedObject var sessionMonitor: ClaudeSessionMonitor
     @ObservedObject var viewModel: NotchViewModel
+    var showsSessionLabel: Bool = false
 
     var body: some View {
-        if session.activePermission?.toolName == "AskUserQuestion",
-           let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
-            askContent(question: parsed)
-        } else {
-            permissionContent
+        VStack(alignment: .leading, spacing: 2) {
+            if showsSessionLabel {
+                Text(session.friendlyProjectName)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.35))
+                    .padding(.horizontal, 8)
+            }
+
+            if session.activePermission?.toolName == "AskUserQuestion",
+               let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
+                askContent(question: parsed)
+            } else {
+                permissionContent
+            }
+        }
+        // The whole card opens the chat; buttons and chips inside keep priority
+        .contentShape(Rectangle())
+        .onTapGesture {
+            viewModel.showChat(for: session)
         }
     }
 

@@ -1110,4 +1110,28 @@ actor SessionStore {
     func allSessions() -> [SessionState] {
         Array(sessions.values)
     }
+
+    // MARK: - Reconciliation
+
+    /// Clear phases that can no longer be true. Hook-driven state has no
+    /// second chance: if a Stop event is lost (app restart, socket hiccup)
+    /// a session stays "processing" forever. A processing/compacting session
+    /// with no events for this long has lost its Stop — quietly settle it to
+    /// idle (no sound, no checkmark; the next real event corrects it again).
+    func reconcileStalePhases(olderThan interval: TimeInterval = 600) {
+        let cutoff = Date().addingTimeInterval(-interval)
+        var changed = false
+        for (id, var session) in sessions {
+            let phaseIsBusy = session.phase == .processing || session.phase == .compacting
+            if phaseIsBusy && session.lastActivity < cutoff {
+                Self.logger.info("Reconciling stale phase for \(id.prefix(8), privacy: .public) (no events for \(Int(-session.lastActivity.timeIntervalSinceNow))s)")
+                session.phase = .idle
+                sessions[id] = session
+                changed = true
+            }
+        }
+        if changed {
+            publishState()
+        }
+    }
 }
