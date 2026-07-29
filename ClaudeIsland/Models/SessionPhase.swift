@@ -16,6 +16,8 @@ struct PermissionContext: Sendable {
     let message: String?
     let receivedAt: Date
     let hasAlwaysOption: Bool
+    /// Agent type when the permission originates from a subagent (e.g. "Explore")
+    var originAgentType: String? = nil
 
     /// Format tool input for display
     var formattedInput: String? {

@@ -17,6 +17,8 @@ private let cornerRadiusInsets = (
 )
 
 struct NotchView: View {
+    static let soundLogger = Logger(subsystem: "com.claudeisland", category: "DoneSound")
+
     @ObservedObject var viewModel: NotchViewModel
     @StateObject private var sessionMonitor = ClaudeSessionMonitor()
     @StateObject private var activityCoordinator = NotchActivityCoordinator.shared
@@ -648,6 +650,9 @@ struct NotchView: View {
             Task {
                 let shouldPlaySound = await shouldPlayNotificationSound(for: mainAgentDone)
                 if shouldPlaySound {
+                    for s in mainAgentDone {
+                        Self.soundLogger.info("done sound: session=\(s.sessionId.prefix(8), privacy: .public) tty=\(s.tty ?? "nil", privacy: .public) child=\(s.isChildSession, privacy: .public) cwd=\(s.projectName, privacy: .public) title=\(s.displayTitle.prefix(30), privacy: .public)")
+                    }
                     await MainActor.run {
                         NSSound(named: soundName)?.play()
                     }
@@ -749,6 +754,9 @@ struct NotchView: View {
             // Fallback: use permission context directly
             if let perm = session.activePermission {
                 let name = MCPToolFormatter.formatToolName(perm.toolName)
+                if let agent = perm.originAgentType {
+                    return "[\(agent)] \(name)"
+                }
                 return isTeammateRequest ? "Teammate: \(name)" : name
             }
             return "Permission required"

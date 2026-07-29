@@ -142,7 +142,8 @@ extension HookEvent {
                 toolInput: toolInput,
                 message: nil,
                 receivedAt: Date(),
-                hasAlwaysOption: hasPermissionSuggestions ?? false
+                hasAlwaysOption: hasPermissionSuggestions ?? false,
+                originAgentType: agentType
             ))
         }
 

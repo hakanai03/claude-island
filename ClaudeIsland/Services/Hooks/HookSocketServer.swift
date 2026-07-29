@@ -27,6 +27,7 @@ struct HookEvent: Codable, Sendable {
     let message: String?
     let transcriptPath: String?
     let hasPermissionSuggestions: Bool?
+    let agentType: String?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -37,10 +38,11 @@ struct HookEvent: Codable, Sendable {
         case message
         case transcriptPath = "transcript_path"
         case hasPermissionSuggestions = "has_permission_suggestions"
+        case agentType = "agent_type"
     }
 
     /// Create a copy with updated toolUseId
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, transcriptPath: String? = nil, hasPermissionSuggestions: Bool? = nil) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, transcriptPath: String? = nil, hasPermissionSuggestions: Bool? = nil, agentType: String? = nil) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -54,6 +56,7 @@ struct HookEvent: Codable, Sendable {
         self.message = message
         self.transcriptPath = transcriptPath
         self.hasPermissionSuggestions = hasPermissionSuggestions
+        self.agentType = agentType
     }
 
     var sessionPhase: SessionPhase {
@@ -457,7 +460,8 @@ class HookSocketServer {
                 notificationType: event.notificationType,
                 message: event.message,
                 transcriptPath: event.transcriptPath,
-                hasPermissionSuggestions: event.hasPermissionSuggestions
+                hasPermissionSuggestions: event.hasPermissionSuggestions,
+                agentType: event.agentType
             )
 
             let pending = PendingPermission(

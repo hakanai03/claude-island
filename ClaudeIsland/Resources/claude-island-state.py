@@ -176,6 +176,9 @@ def main():
         state["status"] = "waiting_for_approval"
         state["tool"] = data.get("tool_name")
         state["tool_input"] = tool_input
+        # Present for subagent-originated requests (main session_id + agent info)
+        if data.get("agent_type"):
+            state["agent_type"] = data.get("agent_type")
         # tool_use_id lookup handled by Swift-side cache from PreToolUse
         # Pass whether "always allow" suggestions are available
         suggestions = data.get("permission_suggestions", [])

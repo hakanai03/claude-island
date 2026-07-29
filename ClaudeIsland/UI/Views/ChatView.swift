@@ -596,8 +596,9 @@ struct ChatView: View {
         let canAlways = hasAlways && effectiveTmux
         let isTeammate = session.activePermission?.message != nil
             && (session.activePermission?.toolInput?.isEmpty ?? true)
+        let originAgent = session.activePermission?.originAgentType
         return ChatApprovalBar(
-            tool: tool,
+            tool: originAgent.map { "[\($0)] \(tool)" } ?? tool,
             toolInput: session.activePermission?.toolInput,
             message: session.activePermission?.message,
             isTeammateRequest: isTeammate,
