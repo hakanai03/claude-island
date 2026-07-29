@@ -151,7 +151,7 @@ class NotchWindowController: NSWindowController {
                     var out = ""
                     for s in await SessionStore.shared.allSessions() {
                         out += "id=\(s.sessionId.prefix(8)) tty=\(s.tty ?? "nil") pid=\(s.pid.map(String.init) ?? "nil") "
-                        out += "phase=\(String(describing: s.phase).prefix(30)) headless=\(s.isHeadless) subagent=\(s.isSubagent) "
+                        out += "phase=\(String(describing: s.phase).prefix(30)) headless=\(s.isHeadless) subagent=\(s.isSubagent) bg=\(s.pendingBackgroundTasks) "
                         out += "tmux=\(s.isInTmux) cwd=\(s.cwd) title=\(s.displayTitle.prefix(40))\n"
                     }
                     try? out.write(toFile: "/tmp/claude-island-sessions.txt", atomically: true, encoding: .utf8)

@@ -28,6 +28,7 @@ struct HookEvent: Codable, Sendable {
     let transcriptPath: String?
     let hasPermissionSuggestions: Bool?
     let agentType: String?
+    let backgroundTasks: Int?
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
@@ -39,10 +40,11 @@ struct HookEvent: Codable, Sendable {
         case transcriptPath = "transcript_path"
         case hasPermissionSuggestions = "has_permission_suggestions"
         case agentType = "agent_type"
+        case backgroundTasks = "background_tasks"
     }
 
     /// Create a copy with updated toolUseId
-    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, transcriptPath: String? = nil, hasPermissionSuggestions: Bool? = nil, agentType: String? = nil) {
+    init(sessionId: String, cwd: String, event: String, status: String, pid: Int?, tty: String?, tool: String?, toolInput: [String: AnyCodable]?, toolUseId: String?, notificationType: String?, message: String?, transcriptPath: String? = nil, hasPermissionSuggestions: Bool? = nil, agentType: String? = nil, backgroundTasks: Int? = nil) {
         self.sessionId = sessionId
         self.cwd = cwd
         self.event = event
@@ -57,6 +59,7 @@ struct HookEvent: Codable, Sendable {
         self.transcriptPath = transcriptPath
         self.hasPermissionSuggestions = hasPermissionSuggestions
         self.agentType = agentType
+        self.backgroundTasks = backgroundTasks
     }
 
     var sessionPhase: SessionPhase {
@@ -461,7 +464,8 @@ class HookSocketServer {
                 message: event.message,
                 transcriptPath: event.transcriptPath,
                 hasPermissionSuggestions: event.hasPermissionSuggestions,
-                agentType: event.agentType
+                agentType: event.agentType,
+                backgroundTasks: event.backgroundTasks
             )
 
             let pending = PendingPermission(

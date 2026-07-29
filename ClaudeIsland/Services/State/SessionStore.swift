@@ -191,6 +191,7 @@ actor SessionStore {
 
         if event.event == "Stop" {
             session.subagentState = SubagentState()
+            session.pendingBackgroundTasks = event.backgroundTasks ?? 0
         }
 
         sessions[sessionId] = session

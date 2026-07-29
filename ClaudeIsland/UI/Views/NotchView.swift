@@ -625,6 +625,7 @@ struct NotchView: View {
         // and were not just compacting
         let mainAgentDone = stillWaiting.filter {
             !$0.isSubagent && !$0.isHeadless && !$0.subagentState.hasActiveSubagent
+                && $0.pendingBackgroundTasks == 0
                 && !capturedCompactedIds.contains($0.stableId)
         }
         guard !mainAgentDone.isEmpty else { return }

@@ -156,6 +156,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// (set from the process tree when the pid is learned)
     var isChildSession: Bool = false
 
+    /// Background tasks still running when the last Stop fired. Non-zero
+    /// means the session will auto-resume — user input isn't needed yet,
+    /// so the done sound is suppressed.
+    var pendingBackgroundTasks: Int = 0
+
     /// Whether this is a non-interactive session the user never converses
     /// with — e.g. `claude -p` children spawned by skills or background
     /// batches. Detected by a missing pty OR a claude process in the

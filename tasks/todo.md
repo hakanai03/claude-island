@@ -36,6 +36,15 @@
 - [x] Fix 4: ProcessingSpinnerをTimelineViewに置換（Timer.publish廃止） [Medium]
 - [x] Fix 5: ClaudeCrabIconのタイマーをTimelineView(.animation(paused:))に置換 [Medium]
 
+## 次の大物: 「要input」キュー UI（ユーザー提案 2026-07-29）
+
+- [ ] islandに「ユーザーのinputが必要な処理」の専用リスト（下段/別セクション）を新設する
+  - 対象: permission request（メイン/subagent発とも）、AskUserQuestion、ExitPlanMode承認
+  - 各行に「どのセッション・どのagentが・何をしようとしているか」を添えて複数件を同時表示
+  - 現在のchat内approvalバーは「たまたまそのchatを開いていた場合」の表示に留め、
+    要inputの一次的な入口はこのキューにする（複数リクエストが被っても取りこぼさない）
+  - 完了音/permission音の発火条件もこのキューへの追加と同期させると一貫する
+
 ## UI改善
 
 - [x] 複数セッション時にクロードくんアイコンを重ねて表示（2匹、3匹...）

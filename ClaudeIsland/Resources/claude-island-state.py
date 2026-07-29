@@ -236,6 +236,12 @@ def main():
 
     elif event == "Stop":
         state["status"] = "waiting_for_input"
+        # If background tasks remain, the session will auto-resume — the app
+        # uses this to suppress the "done" sound (user input isn't needed yet)
+        try:
+            state["background_tasks"] = len(data.get("background_tasks") or [])
+        except TypeError:
+            state["background_tasks"] = 0
 
     elif event == "SubagentStop":
         # SubagentStop fires mid-turn when a subagent completes; the main agent
