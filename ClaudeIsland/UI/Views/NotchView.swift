@@ -767,6 +767,11 @@ struct InputRequestRow: View {
     @ObservedObject var viewModel: NotchViewModel
     var showsSessionLabel: Bool = false
 
+    /// Answers collected so far for a multi-question ask (option numbers).
+    /// Typed all at once when the last question is answered — number keys
+    /// auto-advance in the CLI and the final one auto-submits.
+    @State private var collectedAnswers: [String] = []
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             if showsSessionLabel {
@@ -776,9 +781,11 @@ struct InputRequestRow: View {
                     .padding(.horizontal, 8)
             }
 
-            if session.activePermission?.toolName == "AskUserQuestion",
-               let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
-                askContent(question: parsed)
+            let questions = session.activePermission?.toolName == "AskUserQuestion"
+                ? AskQuestionInput.parseAll(from: session.activePermission?.toolInput)
+                : []
+            if !questions.isEmpty {
+                askContent(questions: questions)
             } else {
                 permissionContent
             }
@@ -790,33 +797,77 @@ struct InputRequestRow: View {
         }
     }
 
+    /// Current question + option chips (multi-question asks advance locally,
+    /// then all answers are typed in one sequence)
+    @ViewBuilder
+    private func askContent(questions: [AskQuestionInput]) -> some View {
+        // multiSelect questions toggle instead of advancing on number keys —
+        // not supported from the island yet, so only offer the first question
+        let interactive = !questions.contains(where: \.multiSelect)
+        let index = interactive ? min(collectedAnswers.count, questions.count - 1) : 0
+        askQuestionView(
+            question: questions[index],
+            index: index,
+            total: questions.count,
+            interactive: interactive
+        )
+    }
+
+    private func answerTapped(optionIndex: Int, totalQuestions: Int, interactive: Bool) {
+        let answer = String(optionIndex + 1)
+
+        guard interactive, totalQuestions > 1 else {
+            sessionMonitor.answerQuestion(sessionId: session.sessionId, answer: answer)
+            return
+        }
+
+        let answers = collectedAnswers + [answer]
+        if answers.count >= totalQuestions {
+            sessionMonitor.answerQuestions(sessionId: session.sessionId, answers: answers)
+            collectedAnswers = []
+        } else {
+            collectedAnswers = answers
+        }
+    }
+
     /// Question text + option chips
     @ViewBuilder
-    private func askContent(question: AskQuestionInput) -> some View {
+    private func askQuestionView(question: AskQuestionInput, index: Int, total: Int, interactive: Bool) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // Question text (tap to expand to full chat)
             Button {
                 viewModel.showChat(for: session)
             } label: {
-                Text(question.question)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.9))
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(alignment: .top, spacing: 6) {
+                    if total > 1 {
+                        Text("\(index + 1)/\(total)")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(.white.opacity(0.5))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                    }
+                    Text(question.question)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9))
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             // Option chips
             if !question.options.isEmpty {
                 HStack(spacing: 6) {
-                    ForEach(Array(question.options.enumerated()), id: \.offset) { index, option in
+                    ForEach(Array(question.options.enumerated()), id: \.offset) { optionIndex, option in
                         Button {
                             // Peek closes automatically once the queue empties
-                            sessionMonitor.answerQuestion(
-                                sessionId: session.sessionId,
-                                answer: String(index + 1)
+                            answerTapped(
+                                optionIndex: optionIndex,
+                                totalQuestions: total,
+                                interactive: interactive
                             )
                         } label: {
                             Text(option.label)

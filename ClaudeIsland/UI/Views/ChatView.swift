@@ -1221,20 +1221,28 @@ struct AskQuestionInput {
     let multiSelect: Bool
 
     static func parse(from toolInput: [String: AnyCodable]?) -> AskQuestionInput? {
-        guard let input = toolInput,
-              let questionsAny = input["questions"]?.value as? [Any],
-              let firstQ = questionsAny.first as? [String: Any],
-              let question = firstQ["question"] as? String else { return nil }
+        parseAll(from: toolInput).first
+    }
 
-        var options: [QuestionOption] = []
-        if let optionsArray = firstQ["options"] as? [[String: Any]] {
-            options = optionsArray.compactMap { opt in
-                guard let label = opt["label"] as? String else { return nil }
-                return QuestionOption(label: label, description: opt["description"] as? String)
+    /// All questions in the tool input (AskUserQuestion supports up to 4)
+    static func parseAll(from toolInput: [String: AnyCodable]?) -> [AskQuestionInput] {
+        guard let input = toolInput,
+              let questionsAny = input["questions"]?.value as? [Any] else { return [] }
+
+        return questionsAny.compactMap { entry in
+            guard let dict = entry as? [String: Any],
+                  let question = dict["question"] as? String else { return nil }
+
+            var options: [QuestionOption] = []
+            if let optionsArray = dict["options"] as? [[String: Any]] {
+                options = optionsArray.compactMap { opt in
+                    guard let label = opt["label"] as? String else { return nil }
+                    return QuestionOption(label: label, description: opt["description"] as? String)
+                }
             }
+            let multiSelect = dict["multiSelect"] as? Bool ?? false
+            return AskQuestionInput(question: question, options: options, multiSelect: multiSelect)
         }
-        let multiSelect = firstQ["multiSelect"] as? Bool ?? false
-        return AskQuestionInput(question: question, options: options, multiSelect: multiSelect)
     }
 }
 

@@ -202,6 +202,13 @@ class ClaudeSessionMonitor: ObservableObject {
     // MARK: - AskUserQuestion Handling
 
     /// Answer an AskUserQuestion by allowing the permission and typing the answer into tmux
+    /// Answer a multi-question AskUserQuestion: one entry per question, in
+    /// order. Question numbers auto-advance in the CLI and the last one
+    /// auto-submits, so this just types each part in sequence.
+    func answerQuestions(sessionId: String, answers: [String]) {
+        answerQuestion(sessionId: sessionId, answer: answers.joined(separator: "\n"))
+    }
+
     func answerQuestion(sessionId: String, answer: String) {
         Task {
             guard let session = await SessionStore.shared.session(for: sessionId),
@@ -236,12 +243,17 @@ class ClaudeSessionMonitor: ObservableObject {
                 if index > 0 {
                     try? await Task.sleep(for: .milliseconds(300))
                 }
+                // Option numbers select-and-advance on their own; pressing
+                // Enter after them would confirm the NEXT question's default.
+                // Free text (custom answers) still needs Enter to confirm.
+                let isOptionNumber = !part.isEmpty && part.allSatisfy(\.isNumber)
                 let sent = await ToolApprovalHandler.shared.sendMessageWithFallback(
                     part,
                     tty: tty,
                     isInTmux: usingTmux,
                     pid: session.pid,
-                    tmuxTarget: tmuxTarget
+                    tmuxTarget: tmuxTarget,
+                    pressEnter: !isOptionNumber
                 )
                 if !sent {
                     Self.logger.error("answerQuestion: failed to send \"\(part, privacy: .public)\" to terminal (usingTmux=\(usingTmux, privacy: .public))")

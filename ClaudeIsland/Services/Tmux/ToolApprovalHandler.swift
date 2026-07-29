@@ -54,10 +54,11 @@ actor ToolApprovalHandler {
         tty: String,
         isInTmux: Bool,
         pid: Int?,
-        tmuxTarget: TmuxTarget?
+        tmuxTarget: TmuxTarget?,
+        pressEnter: Bool = true
     ) async -> Bool {
         if isInTmux, let target = tmuxTarget {
-            return await sendMessage(message, to: target)
+            return await sendKeys(to: target, keys: message, pressEnter: pressEnter)
         }
         return false
     }
