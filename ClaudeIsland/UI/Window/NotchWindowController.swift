@@ -131,6 +131,8 @@ class NotchWindowController: NSWindowController {
                 self.viewModel.notchClose()
             case "open":
                 self.viewModel.notchOpen(reason: .click)
+            case "instances":
+                self.viewModel.exitChat()
             case "dumptree":
                 let pid = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
                 let tree = ProcessTreeBuilder.shared.buildTree()

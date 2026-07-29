@@ -717,18 +717,60 @@ struct NotchView: View {
 
     @ViewBuilder
     private func peekRequestContent(session: SessionState) -> some View {
-        let isAsk = session.activePermission?.toolName == "AskUserQuestion"
+        InputRequestRow(session: session, sessionMonitor: sessionMonitor, viewModel: viewModel)
+    }
 
-        if isAsk, let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
-            peekAskContent(session: session, question: parsed)
+    /// Determine if notification sound should play for the given sessions
+    /// Returns true if ANY session is not actively focused
+    private func shouldPlayNotificationSound(for sessions: [SessionState]) async -> Bool {
+        for session in sessions {
+            guard let pid = session.pid else {
+                // No PID means we can't check focus, assume not focused
+                return true
+            }
+
+            let isFocused = await TerminalVisibilityDetector.isSessionFocused(sessionPid: pid)
+            Self.soundLogger.info("focus check: session=\(session.sessionId.prefix(8), privacy: .public) pid=\(pid, privacy: .public) focused=\(isFocused, privacy: .public)")
+            if !isFocused {
+                return true
+            }
+
+            // Terminal app is frontmost, but a tmux pane in a non-active
+            // window (or detached session) is still invisible — notify
+            if let tty = session.tty,
+               let visible = await ClaudeSessionMonitor.isTmuxPaneVisible(tty: tty),
+               !visible {
+                Self.soundLogger.info("pane hidden in tmux — playing despite focused terminal")
+                return true
+            }
+        }
+
+        Self.soundLogger.info("sound suppressed: all target sessions focused")
+        return false
+    }
+}
+
+// MARK: - Input Request Row (shared by the peek queue and the instances view)
+
+/// One session that needs user input: an AskUserQuestion (question + chips)
+/// or a permission request (tool name + Allow/Deny buttons)
+struct InputRequestRow: View {
+    let session: SessionState
+    @ObservedObject var sessionMonitor: ClaudeSessionMonitor
+    @ObservedObject var viewModel: NotchViewModel
+
+    var body: some View {
+        if session.activePermission?.toolName == "AskUserQuestion",
+           let parsed = AskQuestionInput.parse(from: session.activePermission?.toolInput) {
+            askContent(question: parsed)
         } else {
-            peekPermissionContent(session: session)
+            permissionContent
         }
     }
 
-    /// Peek content for AskUserQuestion: question text + option chips
+    /// Question text + option chips
     @ViewBuilder
-    private func peekAskContent(session: SessionState, question: AskQuestionInput) -> some View {
+    private func askContent(question: AskQuestionInput) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             // Question text (tap to expand to full chat)
             Button {
@@ -779,9 +821,9 @@ struct NotchView: View {
         .padding(.vertical, 4)
     }
 
-    /// Peek content for regular permission: tool name + Allow/Always buttons
+    /// Regular permission: tool name + Allow/Always buttons
     @ViewBuilder
-    private func peekPermissionContent(session: SessionState) -> some View {
+    private var permissionContent: some View {
         let isTeammateRequest = session.activePermission?.message != nil
             && (session.activePermission?.toolInput?.isEmpty ?? true)
 
@@ -876,32 +918,4 @@ struct NotchView: View {
         .padding(.vertical, 4)
     }
 
-    /// Determine if notification sound should play for the given sessions
-    /// Returns true if ANY session is not actively focused
-    private func shouldPlayNotificationSound(for sessions: [SessionState]) async -> Bool {
-        for session in sessions {
-            guard let pid = session.pid else {
-                // No PID means we can't check focus, assume not focused
-                return true
-            }
-
-            let isFocused = await TerminalVisibilityDetector.isSessionFocused(sessionPid: pid)
-            Self.soundLogger.info("focus check: session=\(session.sessionId.prefix(8), privacy: .public) pid=\(pid, privacy: .public) focused=\(isFocused, privacy: .public)")
-            if !isFocused {
-                return true
-            }
-
-            // Terminal app is frontmost, but a tmux pane in a non-active
-            // window (or detached session) is still invisible — notify
-            if let tty = session.tty,
-               let visible = await ClaudeSessionMonitor.isTmuxPaneVisible(tty: tty),
-               !visible {
-                Self.soundLogger.info("pane hidden in tmux — playing despite focused terminal")
-                return true
-            }
-        }
-
-        Self.soundLogger.info("sound suppressed: all target sessions focused")
-        return false
-    }
 }

@@ -99,9 +99,40 @@ struct ClaudeInstancesView: View {
         return result
     }
 
+    /// Sessions currently waiting on the user (permission or question)
+    private var inputQueue: [SessionState] {
+        visibleInstances.filter { !$0.isSubagent && $0.activePermission != nil }
+    }
+
     private var instancesList: some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(spacing: 2) {
+                // Needs-input queue pinned above the session list
+                if !inputQueue.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(inputQueue) { pending in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(pending.friendlyProjectName)
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.35))
+                                    .padding(.horizontal, 8)
+                                InputRequestRow(
+                                    session: pending,
+                                    sessionMonitor: sessionMonitor,
+                                    viewModel: viewModel
+                                )
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.white.opacity(0.05))
+                    )
+                    .padding(.bottom, 6)
+                }
+
                 ForEach(groupedInstances, id: \.parent.stableId) { group in
                     // Parent row
                     HStack(spacing: 0) {
