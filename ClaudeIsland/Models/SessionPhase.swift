@@ -90,6 +90,8 @@ enum SessionPhase: Sendable {
             return true
         case (.idle, .waitingForApproval):
             return true  // Direct permission request on idle session
+        case (.idle, .waitingForInput):
+            return true  // First observed event is a Stop (e.g. right after app launch)
         case (.idle, .compacting):
             return true
 

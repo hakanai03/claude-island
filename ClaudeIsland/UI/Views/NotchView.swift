@@ -843,11 +843,13 @@ struct NotchView: View {
             }
 
             let isFocused = await TerminalVisibilityDetector.isSessionFocused(sessionPid: pid)
+            Self.soundLogger.info("focus check: session=\(session.sessionId.prefix(8), privacy: .public) pid=\(pid, privacy: .public) focused=\(isFocused, privacy: .public)")
             if !isFocused {
                 return true
             }
         }
 
+        Self.soundLogger.info("sound suppressed: all target sessions focused")
         return false
     }
 }
