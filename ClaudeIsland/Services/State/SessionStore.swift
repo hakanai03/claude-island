@@ -1097,13 +1097,17 @@ actor SessionStore {
     // MARK: - Session Persistence
 
     /// Minimal facts needed to restore a session after an app restart
-    private struct PersistedSession: Codable {
+    private struct PersistedSession: Codable, Equatable {
         let sessionId: String
         let cwd: String
         let pid: Int?
         let tty: String?
         let transcriptPath: String?
     }
+
+    /// Last snapshot scheduled for writing — the persisted facts only change
+    /// when sessions come and go, so most state changes need no disk write
+    private var lastScheduledSnapshot: [PersistedSession]?
 
     private static var snapshotURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -1113,11 +1117,17 @@ actor SessionStore {
     }
 
     private func scheduleSnapshotWrite() {
+        let snapshot = sessions.values
+            .map {
+                PersistedSession(sessionId: $0.sessionId, cwd: $0.cwd, pid: $0.pid,
+                                 tty: $0.tty, transcriptPath: $0.transcriptPath)
+            }
+            .sorted { $0.sessionId < $1.sessionId }
+
+        guard snapshot != lastScheduledSnapshot else { return }
+        lastScheduledSnapshot = snapshot
+
         pendingSnapshotWrite?.cancel()
-        let snapshot = sessions.values.map {
-            PersistedSession(sessionId: $0.sessionId, cwd: $0.cwd, pid: $0.pid,
-                             tty: $0.tty, transcriptPath: $0.transcriptPath)
-        }
         pendingSnapshotWrite = Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             guard !Task.isCancelled else { return }
