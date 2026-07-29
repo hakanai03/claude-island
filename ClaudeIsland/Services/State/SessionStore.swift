@@ -29,6 +29,9 @@ actor SessionStore {
     /// Sync debounce interval (100ms)
     private let syncDebounceNs: UInt64 = 100_000_000
 
+    /// Debounced snapshot persistence (so app restarts can restore sessions)
+    private var pendingSnapshotWrite: Task<Void, Never>?
+
     // MARK: - Published State (for UI)
 
     /// Publisher for session state changes (nonisolated for Combine subscription from any context)
@@ -1088,6 +1091,78 @@ actor SessionStore {
     private func publishState() {
         let sortedSessions = Array(sessions.values).sorted { $0.projectName < $1.projectName }
         sessionsSubject.send(sortedSessions)
+        scheduleSnapshotWrite()
+    }
+
+    // MARK: - Session Persistence
+
+    /// Minimal facts needed to restore a session after an app restart
+    private struct PersistedSession: Codable {
+        let sessionId: String
+        let cwd: String
+        let pid: Int?
+        let tty: String?
+        let transcriptPath: String?
+    }
+
+    private static var snapshotURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ClaudeIsland", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("sessions.json")
+    }
+
+    private func scheduleSnapshotWrite() {
+        pendingSnapshotWrite?.cancel()
+        let snapshot = sessions.values.map {
+            PersistedSession(sessionId: $0.sessionId, cwd: $0.cwd, pid: $0.pid,
+                             tty: $0.tty, transcriptPath: $0.transcriptPath)
+        }
+        pendingSnapshotWrite = Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled else { return }
+            if let data = try? JSONEncoder().encode(snapshot) {
+                try? data.write(to: Self.snapshotURL, options: .atomic)
+            }
+        }
+    }
+
+    /// Restore sessions persisted by the previous app instance whose claude
+    /// process is still running. Called once at startup — long-running
+    /// conversations reappear immediately instead of waiting for their next
+    /// hook event.
+    func restorePersistedSessions() {
+        guard let data = try? Data(contentsOf: Self.snapshotURL),
+              let snapshot = try? JSONDecoder().decode([PersistedSession].self, from: data),
+              !snapshot.isEmpty else { return }
+
+        let tree = ProcessTreeBuilder.shared.buildTree()
+        var restored = 0
+        for entry in snapshot {
+            guard sessions[entry.sessionId] == nil,
+                  let pid = entry.pid,
+                  kill(pid_t(pid), 0) == 0 else { continue }
+
+            var session = SessionState(
+                sessionId: entry.sessionId,
+                cwd: entry.cwd,
+                projectName: URL(fileURLWithPath: entry.cwd).lastPathComponent,
+                pid: pid,
+                tty: entry.tty,
+                isInTmux: ProcessTreeBuilder.shared.isInTmux(pid: pid, tree: tree),
+                transcriptPath: entry.transcriptPath,
+                phase: .idle
+            )
+            session.isChildSession = ProcessTreeBuilder.shared.hasClaudeAncestor(pid: pid, tree: tree)
+            sessions[entry.sessionId] = session
+            scheduleFileSync(sessionId: entry.sessionId, cwd: entry.cwd)
+            restored += 1
+        }
+
+        if restored > 0 {
+            Self.logger.info("Restored \(restored) session(s) from the previous app instance")
+            publishState()
+        }
     }
 
     // MARK: - Queries

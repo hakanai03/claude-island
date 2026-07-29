@@ -34,6 +34,12 @@ class ClaudeSessionMonitor: ObservableObject {
     // MARK: - Monitoring Lifecycle
 
     func startMonitoring() {
+        // Bring back sessions from before the app (re)start whose claude
+        // process is still alive
+        Task {
+            await SessionStore.shared.restorePersistedSessions()
+        }
+
         // Periodic reconciliation: settle lost-Stop phases and reap sessions
         // whose claude process died without a SessionEnd hook (kill, crash)
         Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
