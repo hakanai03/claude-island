@@ -33,6 +33,11 @@ class NotchViewController: NSViewController {
 
     override func loadView() {
         hostingView = NotchHostingView(rootView: NotchView(viewModel: viewModel))
+        // The window frame is managed entirely by NotchWindowController.
+        // Without this, NSHostingView tries to drive the window's content size
+        // from SwiftUI's ideal size inside updateConstraints, which re-enters
+        // the constraints pass and crashes (NSInternalInconsistencyException).
+        hostingView.sizingOptions = []
         self.view = hostingView
     }
 }

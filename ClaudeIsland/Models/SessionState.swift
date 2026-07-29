@@ -152,6 +152,14 @@ struct SessionState: Equatable, Identifiable, Sendable {
         conversationInfo.teammateName
     }
 
+    /// Whether this is a headless (non-interactive) session — e.g. `claude -p`
+    /// children spawned by skills like review-pr. Interactive sessions always
+    /// have a pty; headless ones have none. The user never converses with
+    /// these, so they are hidden from the conversation list and muted.
+    var isHeadless: Bool {
+        tty == nil
+    }
+
     /// Home directory path (cached for thread safety)
     private static let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
 

@@ -159,7 +159,7 @@ actor ConversationParser {
                         continue  // Skip teammate messages for firstUserMessage
                     }
 
-                    if !msgContent.hasPrefix("<command-name>") && !msgContent.hasPrefix("<local-command") && !msgContent.hasPrefix("Caveat:") {
+                    if !Self.isCommandMarkup(msgContent) {
                         firstUserMessage = Self.truncateMessage(msgContent, maxLength: 50)
                         break
                     }
@@ -181,7 +181,7 @@ actor ConversationParser {
                     let isMeta = json["isMeta"] as? Bool ?? false
                     if !isMeta, let message = json["message"] as? [String: Any] {
                         if let msgContent = message["content"] as? String {
-                            if !msgContent.hasPrefix("<command-name>") && !msgContent.hasPrefix("<local-command") && !msgContent.hasPrefix("Caveat:") {
+                            if !Self.isCommandMarkup(msgContent) {
                                 lastMessage = msgContent
                                 lastMessageRole = type
                             }
@@ -212,7 +212,7 @@ actor ConversationParser {
                 let isMeta = json["isMeta"] as? Bool ?? false
                 if !isMeta, let message = json["message"] as? [String: Any] {
                     if let msgContent = message["content"] as? String {
-                        if !msgContent.hasPrefix("<command-name>") && !msgContent.hasPrefix("<local-command") && !msgContent.hasPrefix("Caveat:") {
+                        if !Self.isCommandMarkup(msgContent) {
                             if let timestampStr = json["timestamp"] as? String {
                                 lastUserMessageDate = iso8601Formatter.date(from: timestampStr)
                             }
@@ -287,6 +287,12 @@ actor ConversationParser {
     }
 
     /// Truncate message for display
+    /// Whether a user message is slash-command / system markup rather than real
+    /// user text. Covers <command-name> (old) and <command-message> (current).
+    nonisolated static func isCommandMarkup(_ content: String) -> Bool {
+        content.hasPrefix("<command-") || content.hasPrefix("<local-command") || content.hasPrefix("Caveat:")
+    }
+
     private static func truncateMessage(_ message: String?, maxLength: Int = 80) -> String? {
         guard let msg = message else { return nil }
         let cleaned = msg.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -484,7 +490,7 @@ actor ConversationParser {
                                     .replacingOccurrences(of: "teammate_id=\"", with: "")
                                     .replacingOccurrences(of: "\"", with: "")
                             }
-                        } else if !msgContent.hasPrefix("<command-name>") && !msgContent.hasPrefix("<local-command") && !msgContent.hasPrefix("Caveat:") {
+                        } else if !Self.isCommandMarkup(msgContent) {
                             if state.firstUserMessage == nil {
                                 state.firstUserMessage = Self.truncateMessage(msgContent, maxLength: 50)
                             }
@@ -622,7 +628,7 @@ actor ConversationParser {
         var blocks: [MessageBlock] = []
 
         if let content = messageDict["content"] as? String {
-            if content.hasPrefix("<command-name>") || content.hasPrefix("<local-command") || content.hasPrefix("Caveat:") {
+            if Self.isCommandMarkup(content) {
                 return nil
             }
             if content.hasPrefix("[Request interrupted by user") {

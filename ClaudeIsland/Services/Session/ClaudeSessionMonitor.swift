@@ -269,7 +269,7 @@ class ClaudeSessionMonitor: ObservableObject {
         // Only update pendingInstances when the set of pending tool IDs actually changes
         // to prevent unnecessary SwiftUI onChange triggers from SubagentStop/PostToolUse etc.
         // Exclude subagent sessions — their permissions are auto-handled by the parent agent
-        let newPending = sessions.filter { $0.needsAttention && !$0.isSubagent }
+        let newPending = sessions.filter { $0.needsAttention && !$0.isSubagent && !$0.isHeadless }
         let newIds = Set(newPending.compactMap { $0.activePermission?.toolUseId ?? $0.stableId })
         let oldIds = Set(pendingInstances.compactMap { $0.activePermission?.toolUseId ?? $0.stableId })
         if newIds != oldIds {

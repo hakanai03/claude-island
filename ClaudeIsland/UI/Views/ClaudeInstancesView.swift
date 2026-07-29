@@ -14,8 +14,14 @@ struct ClaudeInstancesView: View {
 
     @State private var collapsedGroups: Set<String> = []
 
+    /// Sessions the user actually converses with — headless children
+    /// (e.g. claude -p spawned by skills) are not conversations
+    private var visibleInstances: [SessionState] {
+        sessionMonitor.instances.filter { !$0.isHeadless }
+    }
+
     var body: some View {
-        if sessionMonitor.instances.isEmpty {
+        if visibleInstances.isEmpty {
             emptyState
         } else {
             instancesList
@@ -43,7 +49,7 @@ struct ClaudeInstancesView: View {
     /// Secondary sort: by last user message date (stable - doesn't change when agent responds)
     /// Note: approval requests stay in their date-based position to avoid layout shift
     private var sortedInstances: [SessionState] {
-        sessionMonitor.instances.sorted { a, b in
+        visibleInstances.sorted { a, b in
             let priorityA = phasePriority(a.phase)
             let priorityB = phasePriority(b.phase)
             if priorityA != priorityB {

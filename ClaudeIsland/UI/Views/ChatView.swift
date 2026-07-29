@@ -26,6 +26,14 @@ struct ChatView: View {
     @State private var isBottomVisible: Bool = true
     @State private var sendFailed: Bool = false
     @State private var terminalSupportsSend: Bool = true  // optimistic default
+    /// Tmux pane resolved from the session tty. More reliable than the
+    /// process-ancestry isInTmux flag (hook wrapper pids can be short-lived).
+    @State private var resolvedTmuxTarget: TmuxTarget?
+
+    /// Whether tmux-based typing is available for this session
+    private var effectiveTmux: Bool {
+        session.isInTmux || resolvedTmuxTarget != nil
+    }
     @FocusState private var isInputFocused: Bool
 
     init(sessionId: String, initialSession: SessionState, sessionMonitor: ClaudeSessionMonitor, viewModel: NotchViewModel) {
@@ -211,6 +219,20 @@ struct ChatView: View {
         }
         .onAppear {
             terminalSupportsSend = session.isInTmux
+
+            // Resolve the tmux pane from the tty — the isInTmux flag can be
+            // stale/false even for tmux sessions (see effectiveTmux)
+            if let tty = session.tty {
+                Task {
+                    let target = await ClaudeSessionMonitor.findTmuxTarget(tty: tty)
+                    await MainActor.run {
+                        resolvedTmuxTarget = target
+                        if target != nil {
+                            terminalSupportsSend = true
+                        }
+                    }
+                }
+            }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 if canSendMessages && terminalSupportsSend {
@@ -571,7 +593,7 @@ struct ChatView: View {
     private func approvalBar(tool: String) -> some View {
         // Show "Always" only when Claude Code indicates permission_suggestions are available AND in tmux
         let hasAlways = session.activePermission?.hasAlwaysOption ?? false
-        let canAlways = hasAlways && session.isInTmux
+        let canAlways = hasAlways && effectiveTmux
         let isTeammate = session.activePermission?.message != nil
             && (session.activePermission?.toolInput?.isEmpty ?? true)
         return ChatApprovalBar(
@@ -585,7 +607,7 @@ struct ChatView: View {
                 viewModel.notchClose()
             } : nil,
             onGoToTerminal: { focusTerminal() },
-            warningText: hasAlways && !session.isInTmux ? "Always is only available in tmux" : nil,
+            warningText: hasAlways && !effectiveTmux ? "Always is only available in tmux" : nil,
             onApprove: { approvePermission() },
             onDeny: { denyPermission() }
         )
@@ -607,7 +629,7 @@ struct ChatView: View {
     private var interactivePromptBar: some View {
         AskUserQuestionBar(
             toolInput: session.activePermission?.toolInput,
-            isInTmux: session.isInTmux,
+            isInTmux: effectiveTmux,
             onAnswer: { answer in answerQuestion(answer) },
             onGoToTerminal: { focusTerminal() }
         )
@@ -691,12 +713,18 @@ struct ChatView: View {
     private func sendToSession(_ text: String) async -> Bool {
         guard let tty = session.tty else { return false }
 
-        let tmuxTarget: TmuxTarget? = session.isInTmux ? await findTmuxTarget(tty: tty) : nil
+        // Always resolve from the tty — the isInTmux flag can be stale
+        let tmuxTarget: TmuxTarget?
+        if let resolved = resolvedTmuxTarget {
+            tmuxTarget = resolved
+        } else {
+            tmuxTarget = await findTmuxTarget(tty: tty)
+        }
 
         return await ToolApprovalHandler.shared.sendMessageWithFallback(
             text,
             tty: tty,
-            isInTmux: session.isInTmux,
+            isInTmux: tmuxTarget != nil,
             pid: session.pid,
             tmuxTarget: tmuxTarget
         )

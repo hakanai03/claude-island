@@ -31,17 +31,23 @@ struct NotchView: View {
 
     @Namespace private var activityNamespace
 
+    /// Sessions the user actually converses with (excludes headless children
+    /// spawned by skills — they never take user input and shouldn't drive UI)
+    private var interactiveInstances: [SessionState] {
+        sessionMonitor.instances.filter { !$0.isHeadless }
+    }
+
     /// Whether any non-ended sessions exist (for persistent crab display)
     private var hasAnySessions: Bool {
-        sessionMonitor.instances.contains { $0.phase != .ended }
+        interactiveInstances.contains { $0.phase != .ended }
     }
 
     /// Number of active sessions (for stacked crab display)
     private var activeSessionCount: Int {
-        let active = sessionMonitor.instances.filter {
+        let active = interactiveInstances.filter {
             $0.phase != .idle && $0.phase != .ended
         }
-        return max(active.count, sessionMonitor.instances.isEmpty ? 0 : 1)
+        return max(active.count, interactiveInstances.isEmpty ? 0 : 1)
     }
 
     /// Extra width needed for stacked crab icons
@@ -53,12 +59,12 @@ struct NotchView: View {
 
     /// Whether any Claude session is currently processing or compacting
     private var isAnyProcessing: Bool {
-        sessionMonitor.instances.contains { $0.phase == .processing || $0.phase == .compacting }
+        interactiveInstances.contains { $0.phase == .processing || $0.phase == .compacting }
     }
 
     /// Whether any Claude session has a pending permission request
     private var hasPendingPermission: Bool {
-        sessionMonitor.instances.contains { $0.phase.isWaitingForApproval }
+        interactiveInstances.contains { $0.phase.isWaitingForApproval }
     }
 
     /// Whether any Claude session is waiting for user input (done/ready state) within the display window
@@ -72,8 +78,8 @@ struct NotchView: View {
         let now = Date()
         let displayDuration: TimeInterval = 10  // Show checkmark for 10 seconds
 
-        // Only show checkmark for main (non-subagent) sessions
-        return sessionMonitor.instances.contains { session in
+        // Only show checkmark for main (non-subagent, interactive) sessions
+        return interactiveInstances.contains { session in
             guard !session.isSubagent else { return false }
             guard session.phase == .waitingForInput else { return false }
             // Only show if within the 10-second display window
@@ -616,7 +622,7 @@ struct NotchView: View {
         // Only notify for main agent sessions that have no active subagents
         // and were not just compacting
         let mainAgentDone = stillWaiting.filter {
-            !$0.isSubagent && !$0.subagentState.hasActiveSubagent
+            !$0.isSubagent && !$0.isHeadless && !$0.subagentState.hasActiveSubagent
                 && !capturedCompactedIds.contains($0.stableId)
         }
         guard !mainAgentDone.isEmpty else { return }
