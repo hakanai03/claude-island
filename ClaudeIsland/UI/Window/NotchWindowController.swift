@@ -63,7 +63,7 @@ class NotchWindowController: NSWindowController {
         let hostingController = NotchViewController(viewModel: viewModel)
         notchWindow.contentViewController = hostingController
 
-        notchWindow.setFrame(desiredFrame(), display: true)
+        notchWindow.setFrame(desiredFrame(), display: false)
 
         // Track focus behavior on open
         viewModel.$status
@@ -287,13 +287,16 @@ class NotchWindowController: NSWindowController {
                 width: unionWidth,
                 height: unionHeight
             )
-            window.setFrame(union, display: true)
+            // display: false — synchronous display work inside setFrame can
+            // land in the AppKit display cycle, where SwiftUI's reaction to
+            // the geometry change re-enters the constraints pass and crashes
+            window.setFrame(union, display: false)
         }
 
         if shrinksWidth || shrinksHeight {
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let window = self.window else { return }
-                window.setFrame(self.desiredFrame(), display: true)
+                window.setFrame(self.desiredFrame(), display: false)
             }
             pendingShrink = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
