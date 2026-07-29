@@ -64,6 +64,17 @@ actor ToolApprovalHandler {
     }
 
 
+    /// Whether the pane currently shows AskUserQuestion's review screen.
+    /// Multi-question asks sometimes stop there instead of auto-submitting
+    /// (timing-dependent TUI behavior on rapid input).
+    func paneShowsSubmitPrompt(target: TmuxTarget) async -> Bool {
+        guard let tmuxPath = await TmuxPathFinder.shared.getTmuxPath(),
+              let output = try? await ProcessExecutor.shared.run(
+                tmuxPath, arguments: ["capture-pane", "-p", "-t", target.targetString]
+              ) else { return false }
+        return output.contains("Ready to submit")
+    }
+
     // MARK: - Private Methods
 
     private func sendKeys(to target: TmuxTarget, keys: String, pressEnter: Bool) async -> Bool {

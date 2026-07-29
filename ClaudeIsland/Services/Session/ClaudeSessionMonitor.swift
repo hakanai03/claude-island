@@ -259,6 +259,19 @@ class ClaudeSessionMonitor: ObservableObject {
                     Self.logger.error("answerQuestion: failed to send \"\(part, privacy: .public)\" to terminal (usingTmux=\(usingTmux, privacy: .public))")
                 }
             }
+
+            // Multi-question asks sometimes land on the review screen instead
+            // of auto-submitting — check the actual pane and submit if so
+            if parts.count > 1, let target = tmuxTarget {
+                try? await Task.sleep(for: .milliseconds(700))
+                if await ToolApprovalHandler.shared.paneShowsSubmitPrompt(target: target) {
+                    Self.logger.debug("answerQuestion: review screen detected — submitting")
+                    _ = await ToolApprovalHandler.shared.sendMessageWithFallback(
+                        "1", tty: tty, isInTmux: true, pid: session.pid,
+                        tmuxTarget: target, pressEnter: false
+                    )
+                }
+            }
         }
     }
 
