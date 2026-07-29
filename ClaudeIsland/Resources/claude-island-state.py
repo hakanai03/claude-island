@@ -25,17 +25,49 @@ def debug_log(msg):
         pass
 
 
-def get_tty():
-    """Get the TTY of the Claude process (parent)"""
+def get_claude_pid():
+    """Resolve the actual claude process PID.
+
+    Claude Code may spawn hooks via an intermediate shell, so os.getppid()
+    can point at a short-lived wrapper that is gone by the time the app
+    inspects the process tree. Walk up until we find the claude process.
+    """
     import subprocess
 
-    # Get parent PID (Claude process)
-    ppid = os.getppid()
+    pid = os.getppid()
+    try:
+        for _ in range(5):
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "ppid=,comm="],
+                capture_output=True,
+                text=True,
+                timeout=2
+            )
+            line = result.stdout.strip()
+            if not line:
+                break
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                break
+            ppid, comm = int(parts[0]), parts[1]
+            if "claude" in comm.lower():
+                return pid
+            if ppid <= 1:
+                break
+            pid = ppid
+    except Exception:
+        pass
+    return os.getppid()
 
-    # Try to get TTY from ps command for the parent process
+
+def get_tty(claude_pid):
+    """Get the TTY of the Claude process"""
+    import subprocess
+
+    # Try to get TTY from ps command for the claude process
     try:
         result = subprocess.run(
-            ["ps", "-p", str(ppid), "-o", "tty="],
+            ["ps", "-p", str(claude_pid), "-o", "tty="],
             capture_output=True,
             text=True,
             timeout=2
@@ -103,8 +135,8 @@ def main():
         debug_log(f"  tool={data.get('tool_name')} tool_input={str(tool_input)[:200]}")
 
     # Get process info
-    claude_pid = os.getppid()
-    tty = get_tty()
+    claude_pid = get_claude_pid()
+    tty = get_tty(claude_pid)
 
     # Build state object
     state = {
@@ -203,8 +235,9 @@ def main():
         state["status"] = "waiting_for_input"
 
     elif event == "SubagentStop":
-        # SubagentStop fires when a subagent completes - usually means back to waiting
-        state["status"] = "waiting_for_input"
+        # SubagentStop fires mid-turn when a subagent completes; the main agent
+        # keeps processing its result. Turn end is signaled by Stop.
+        state["status"] = "processing"
 
     elif event == "SessionStart":
         # New session starts waiting for user input

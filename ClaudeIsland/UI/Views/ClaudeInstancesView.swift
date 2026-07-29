@@ -241,7 +241,7 @@ struct InstanceRow: View {
 
     private let claudeOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
     private let spinnerSymbols = ["·", "✢", "✳", "∗", "✻", "✽"]
-    private let spinnerTimer = Timer.publish(every: 0.15, on: .main, in: .common).autoconnect()
+    private let spinnerTimer = Timer.publish(every: 0.3, on: .main, in: .common).autoconnect()
 
     /// Whether we're showing the approval UI
     private var isWaitingForApproval: Bool {
@@ -411,8 +411,21 @@ struct InstanceRow: View {
                 .fill(isHovered ? Color.white.opacity(0.06) : Color.clear)
         )
         .onHover { isHovered = $0 }
+        .onReceive(spinnerTimer) { _ in
+            if needsSpinner {
+                spinnerPhase = (spinnerPhase + 1) % spinnerSymbols.count
+            }
+        }
         .task {
             isYabaiAvailable = await WindowFinder.shared.isYabaiAvailable()
+        }
+    }
+
+    /// Whether the spinner should be animating
+    private var needsSpinner: Bool {
+        switch session.phase {
+        case .processing, .compacting, .waitingForApproval: return true
+        default: return false
         }
     }
 
@@ -423,16 +436,10 @@ struct InstanceRow: View {
             Text(spinnerSymbols[spinnerPhase % spinnerSymbols.count])
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(claudeOrange)
-                .onReceive(spinnerTimer) { _ in
-                    spinnerPhase = (spinnerPhase + 1) % spinnerSymbols.count
-                }
         case .waitingForApproval:
             Text(spinnerSymbols[spinnerPhase % spinnerSymbols.count])
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(TerminalColors.amber)
-                .onReceive(spinnerTimer) { _ in
-                    spinnerPhase = (spinnerPhase + 1) % spinnerSymbols.count
-                }
         case .waitingForInput:
             Circle()
                 .fill(TerminalColors.green)

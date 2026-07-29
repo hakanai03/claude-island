@@ -150,17 +150,7 @@ extension HookEvent {
         // No socket response possible — approval handled via TTY keystrokes
         if event == "Notification" && notificationType == "permission_prompt"
             && status == "waiting_for_approval" {
-            // Parse tool name from message (e.g. "Claude needs your permission to use Bash")
-            let parsedToolName: String? = {
-                guard let msg = message else { return nil }
-                if let range = msg.range(of: "to use ") {
-                    let after = msg[range.upperBound...]
-                    let name = after.prefix(while: { !$0.isWhitespace && !$0.isNewline })
-                    return name.isEmpty ? nil : String(name)
-                }
-                return nil
-            }()
-            let toolName = tool ?? parsedToolName ?? "Permission"
+            let toolName = tool ?? notificationToolName ?? "Permission"
             return .waitingForApproval(PermissionContext(
                 toolUseId: "notification-\(UUID().uuidString)",
                 toolName: toolName,
@@ -187,6 +177,14 @@ extension HookEvent {
         default:
             return .idle
         }
+    }
+
+    /// Tool name parsed from a permission notification message
+    /// (e.g. "Claude needs your permission to use Bash")
+    nonisolated var notificationToolName: String? {
+        guard let msg = message, let range = msg.range(of: "to use ") else { return nil }
+        let name = msg[range.upperBound...].prefix(while: { !$0.isWhitespace && !$0.isNewline })
+        return name.isEmpty ? nil : String(name)
     }
 
     /// Whether this is a tool-related event

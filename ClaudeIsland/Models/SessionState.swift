@@ -44,6 +44,11 @@ struct SessionState: Equatable, Identifiable, Sendable {
     /// State for Task tools and their nested subagent tools
     var subagentState: SubagentState
 
+    /// Recent local tool activity by tool name (PreToolUse/PermissionRequest arrival times).
+    /// Used to drop Claude Code's delayed permission Notifications that duplicate a
+    /// socket-based permission already handled (or resolved) locally.
+    var recentToolNameActivity: [String: Date] = [:]
+
     // MARK: - Conversation Info (from JSONL parsing)
 
     var conversationInfo: ConversationInfo
@@ -312,6 +317,11 @@ struct SubagentState: Equatable, Sendable {
     /// Whether there's an active subagent
     nonisolated var hasActiveSubagent: Bool {
         !activeTasks.isEmpty
+    }
+
+    /// Whether a tool name spawns a subagent ("Task" in older Claude Code, "Agent" in current)
+    nonisolated static func isSpawnTool(_ name: String?) -> Bool {
+        name == "Task" || name == "Agent"
     }
 
     /// Start tracking a Task tool

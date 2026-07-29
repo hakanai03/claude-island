@@ -18,6 +18,11 @@ struct ConversationInfo: Equatable {
     let lastUserMessageDate: Date?  // Timestamp of last user message (for stable sorting)
     let isSubagent: Bool  // True if this session is a teammate/subagent
     let teammateName: String?  // Extracted teammate name (e.g. "team-lead")
+
+    nonisolated static let empty = ConversationInfo(
+        summary: nil, lastMessage: nil, lastMessageRole: nil, lastToolName: nil,
+        firstUserMessage: nil, lastUserMessageDate: nil, isSubagent: false, teammateName: nil
+    )
 }
 
 actor ConversationParser {
@@ -25,6 +30,13 @@ actor ConversationParser {
 
     /// Logger for conversation parser (nonisolated static for cross-context access)
     nonisolated static let logger = Logger(subsystem: "com.claudeisland", category: "Parser")
+
+    /// Shared ISO8601 formatter (avoids repeated allocation in hot loops)
+    private let iso8601Formatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
 
     /// Cache of parsed conversation info, keyed by session file path
     private var cache: [String: CachedInfo] = [:]
@@ -50,6 +62,13 @@ actor ConversationParser {
         var structuredResults: [String: ToolResultData] = [:]  // Structured results keyed by tool_use_id
         var lastClearOffset: UInt64 = 0  // Offset of last /clear command (0 = none or at start)
         var clearPending: Bool = false  // True if a /clear was just detected
+
+        // ConversationInfo fields (maintained incrementally)
+        var summary: String?
+        var firstUserMessage: String?
+        var lastUserMessageDate: Date?
+        var isSubagent: Bool = false
+        var teammateName: String?
     }
 
     /// Parsed tool result data
@@ -83,7 +102,7 @@ actor ConversationParser {
         guard fileManager.fileExists(atPath: sessionFile),
               let attrs = try? fileManager.attributesOfItem(atPath: sessionFile),
               let modDate = attrs[.modificationDate] as? Date else {
-            return ConversationInfo(summary: nil, lastMessage: nil, lastMessageRole: nil, lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil, isSubagent: false, teammateName: nil)
+            return .empty
         }
 
         if let cached = cache[sessionFile], cached.modificationDate == modDate {
@@ -92,7 +111,7 @@ actor ConversationParser {
 
         guard let data = fileManager.contents(atPath: sessionFile),
               let content = String(data: data, encoding: .utf8) else {
-            return ConversationInfo(summary: nil, lastMessage: nil, lastMessageRole: nil, lastToolName: nil, firstUserMessage: nil, lastUserMessageDate: nil, isSubagent: false, teammateName: nil)
+            return .empty
         }
 
         let info = parseContent(content)
@@ -113,9 +132,6 @@ actor ConversationParser {
         var lastUserMessageDate: Date?
         var isSubagent = false
         var teammateName: String?
-
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
         for line in lines {
             guard let lineData = line.data(using: .utf8),
@@ -198,7 +214,7 @@ actor ConversationParser {
                     if let msgContent = message["content"] as? String {
                         if !msgContent.hasPrefix("<command-name>") && !msgContent.hasPrefix("<local-command") && !msgContent.hasPrefix("Caveat:") {
                             if let timestampStr = json["timestamp"] as? String {
-                                lastUserMessageDate = formatter.date(from: timestampStr)
+                                lastUserMessageDate = iso8601Formatter.date(from: timestampStr)
                             }
                             foundLastUserMessage = true
                         }
@@ -248,7 +264,7 @@ actor ConversationParser {
             if let pattern = input["pattern"] as? String {
                 return pattern
             }
-        case "Task":
+        case "Task", "Agent":
             if let description = input["description"] as? String {
                 return description
             }
@@ -387,6 +403,11 @@ actor ConversationParser {
                 state.completedToolIds = []
                 state.toolResults = [:]
                 state.structuredResults = [:]
+                state.summary = nil
+                state.firstUserMessage = nil
+                state.lastUserMessageDate = nil
+                state.isSubagent = false
+                state.teammateName = nil
 
                 if isIncrementalRead {
                     state.clearPending = true
@@ -394,6 +415,15 @@ actor ConversationParser {
                     Self.logger.debug("/clear detected (new), will notify UI")
                 }
                 continue
+            }
+
+            // Extract summary from summary lines
+            if line.contains("\"type\":\"summary\"") {
+                if let lineData = line.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                   let summaryText = json["summary"] as? String {
+                    state.summary = summaryText
+                }
             }
 
             if line.contains("\"tool_result\"") {
@@ -436,16 +466,87 @@ actor ConversationParser {
                 }
             } else if line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\"") {
                 if let lineData = line.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                   let message = parseMessageLine(json, seenToolIds: &state.seenToolIds, toolIdToName: &state.toolIdToName) {
-                    newMessages.append(message)
-                    state.messages.append(message)
+                   let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] {
+
+                    // Update ConversationInfo fields from user messages
+                    let type = json["type"] as? String
+                    let isMeta = json["isMeta"] as? Bool ?? false
+                    if type == "user" && !isMeta,
+                       let messageDict = json["message"] as? [String: Any],
+                       let msgContent = messageDict["content"] as? String {
+                        // Detect subagent/teammate sessions
+                        if msgContent.contains("<teammate-message") || msgContent.contains("teammate_id=") {
+                            state.isSubagent = true
+                            if state.teammateName == nil,
+                               let range = msgContent.range(of: #"teammate_id="([^"]+)""#, options: .regularExpression) {
+                                let match = String(msgContent[range])
+                                state.teammateName = match
+                                    .replacingOccurrences(of: "teammate_id=\"", with: "")
+                                    .replacingOccurrences(of: "\"", with: "")
+                            }
+                        } else if !msgContent.hasPrefix("<command-name>") && !msgContent.hasPrefix("<local-command") && !msgContent.hasPrefix("Caveat:") {
+                            if state.firstUserMessage == nil {
+                                state.firstUserMessage = Self.truncateMessage(msgContent, maxLength: 50)
+                            }
+                            if let timestampStr = json["timestamp"] as? String {
+                                state.lastUserMessageDate = iso8601Formatter.date(from: timestampStr)
+                            }
+                        }
+                    }
+
+                    if let message = parseMessageLine(json, seenToolIds: &state.seenToolIds, toolIdToName: &state.toolIdToName) {
+                        newMessages.append(message)
+                        state.messages.append(message)
+                    }
                 }
             }
         }
 
         state.lastFileOffset = fileSize
         return newMessages
+    }
+
+    /// Build ConversationInfo from incremental state (no file I/O)
+    func conversationInfo(for sessionId: String) -> ConversationInfo {
+        guard let state = incrementalState[sessionId] else {
+            return .empty
+        }
+
+        // Derive lastMessage/lastMessageRole/lastToolName from the last message in state
+        let (lastMessage, lastMessageRole, lastToolName) = Self.findLastDisplayMessage(in: state.messages)
+
+        return ConversationInfo(
+            summary: state.summary,
+            lastMessage: Self.truncateMessage(lastMessage, maxLength: 80),
+            lastMessageRole: lastMessageRole,
+            lastToolName: lastToolName,
+            firstUserMessage: state.firstUserMessage,
+            lastUserMessageDate: state.lastUserMessageDate,
+            isSubagent: state.isSubagent,
+            teammateName: state.teammateName
+        )
+    }
+
+    /// Extract the last displayable message info from a list of ChatMessages.
+    /// Returns (message, role, toolName) — all nil if no displayable message found.
+    private static func findLastDisplayMessage(in messages: [ChatMessage]) -> (String?, String?, String?) {
+        for message in messages.reversed() {
+            let role = message.role == .user ? "user" : "assistant"
+            for block in message.content.reversed() {
+                switch block {
+                case .text(let text):
+                    if !text.hasPrefix("[Request interrupted by user") {
+                        return (text, role, nil)
+                    }
+                case .toolUse(let tool):
+                    let inputAsAny = tool.input.mapValues { $0 as Any }
+                    return (formatToolInput(inputAsAny, toolName: tool.name), "tool", tool.name)
+                case .thinking, .interrupted:
+                    continue
+                }
+            }
+        }
+        return (nil, nil, nil)
     }
 
     /// Get set of completed tool IDs for a session
@@ -513,9 +614,7 @@ actor ConversationParser {
 
         let timestamp: Date
         if let timestampStr = json["timestamp"] as? String {
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            timestamp = formatter.date(from: timestampStr) ?? Date()
+            timestamp = iso8601Formatter.date(from: timestampStr) ?? Date()
         } else {
             timestamp = Date()
         }
@@ -635,7 +734,7 @@ actor ConversationParser {
             return parseGlobResult(toolUseResult)
         case "TodoWrite":
             return parseTodoWriteResult(toolUseResult)
-        case "Task":
+        case "Task", "Agent":
             return parseTaskResult(toolUseResult)
         case "WebFetch":
             return parseWebFetchResult(toolUseResult)
@@ -917,14 +1016,12 @@ actor ConversationParser {
     func parseSubagentTools(agentId: String, cwd: String, sessionId: String? = nil) -> [SubagentToolInfo] {
         guard !agentId.isEmpty else { return [] }
 
-        let agentFile: String
-        if let sessionId, let transcriptPath = transcriptPaths[sessionId] {
-            let dir = (transcriptPath as NSString).deletingLastPathComponent
-            agentFile = dir + "/agent-" + agentId + ".jsonl"
-        } else {
-            let projectDir = cwd.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
-            agentFile = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/agent-" + agentId + ".jsonl"
-        }
+        let agentFile = Self.agentFilePath(
+            agentId: agentId,
+            sessionId: sessionId,
+            transcriptPath: sessionId.flatMap { transcriptPaths[$0] },
+            cwd: cwd
+        )
 
         guard FileManager.default.fileExists(atPath: agentFile),
               let content = try? String(contentsOfFile: agentFile, encoding: .utf8) else {
@@ -1011,18 +1108,39 @@ struct SubagentToolInfo: Sendable {
 // MARK: - Static Subagent Tools Parsing
 
 extension ConversationParser {
+    /// Resolve the agent JSONL file path for a subagent.
+    /// Current Claude Code writes to <project>/<sessionId>/subagents/agent-<id>.jsonl;
+    /// older versions wrote flat to <project>/agent-<id>.jsonl.
+    nonisolated static func agentFilePath(
+        agentId: String,
+        sessionId: String?,
+        transcriptPath: String?,
+        cwd: String
+    ) -> String {
+        let projectDir: String
+        if let transcriptPath {
+            projectDir = (transcriptPath as NSString).deletingLastPathComponent
+        } else {
+            let encoded = cwd.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
+            projectDir = NSHomeDirectory() + "/.claude/projects/" + encoded
+        }
+        let filename = "agent-" + agentId + ".jsonl"
+        let flat = projectDir + "/" + filename
+
+        if let sessionId {
+            let nested = projectDir + "/" + sessionId + "/subagents/" + filename
+            if FileManager.default.fileExists(atPath: nested) { return nested }
+            if FileManager.default.fileExists(atPath: flat) { return flat }
+            return nested
+        }
+        return flat
+    }
+
     /// Parse subagent tools from an agent JSONL file (static, synchronous version)
-    nonisolated static func parseSubagentToolsSync(agentId: String, cwd: String, transcriptPath: String? = nil) -> [SubagentToolInfo] {
+    nonisolated static func parseSubagentToolsSync(agentId: String, cwd: String, transcriptPath: String? = nil, sessionId: String? = nil) -> [SubagentToolInfo] {
         guard !agentId.isEmpty else { return [] }
 
-        let agentFile: String
-        if let transcriptPath {
-            let dir = (transcriptPath as NSString).deletingLastPathComponent
-            agentFile = dir + "/agent-" + agentId + ".jsonl"
-        } else {
-            let projectDir = cwd.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ".", with: "-")
-            agentFile = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/agent-" + agentId + ".jsonl"
-        }
+        let agentFile = agentFilePath(agentId: agentId, sessionId: sessionId, transcriptPath: transcriptPath, cwd: cwd)
 
         guard FileManager.default.fileExists(atPath: agentFile),
               let content = try? String(contentsOfFile: agentFile, encoding: .utf8) else {

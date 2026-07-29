@@ -77,19 +77,23 @@ class ChatHistoryManager: ObservableObject {
         var newHistories: [String: [ChatHistoryItem]] = [:]
         var newAgentDescriptions: [String: [String: String]] = [:]
         for session in sessions {
-            let filteredItems = filterOutSubagentTools(session.chatItems)
-            newHistories[session.sessionId] = filteredItems
+            newHistories[session.sessionId] = filterOutSubagentTools(session.chatItems)
             newAgentDescriptions[session.sessionId] = session.subagentState.agentDescriptions
             loadedSessions.insert(session.sessionId)
         }
-        histories = newHistories
-        agentDescriptions = newAgentDescriptions
+        // Only trigger @Published if something actually changed
+        if newHistories != histories {
+            histories = newHistories
+        }
+        if newAgentDescriptions != agentDescriptions {
+            agentDescriptions = newAgentDescriptions
+        }
     }
 
     private func filterOutSubagentTools(_ items: [ChatHistoryItem]) -> [ChatHistoryItem] {
         var subagentToolIds = Set<String>()
         for item in items {
-            if case .toolCall(let tool) = item.type, tool.name == "Task" {
+            if case .toolCall(let tool) = item.type, SubagentState.isSpawnTool(tool.name) {
                 for subagentTool in tool.subagentTools {
                     subagentToolIds.insert(subagentTool.id)
                 }

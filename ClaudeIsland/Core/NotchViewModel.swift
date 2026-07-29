@@ -208,9 +208,13 @@ class NotchViewModel: ObservableObject {
         switch status {
         case .opened:
             if case .peek(let session) = contentType {
-                // Peek mode: clicking inside notch or panel area → expand to full chat
-                // Clicking outside → close
-                if geometry.isPointInNotch(location) || geometry.isPointInOpenedPanel(location, size: openedSize) {
+                // Peek mode: clicks inside the panel are handled by its own controls
+                // (option chips, question text) — intercepting them here on mouseDown
+                // would destroy the buttons before their mouseUp fires.
+                if geometry.isPointInOpenedPanel(location, size: openedSize) {
+                    // Let SwiftUI buttons inside the peek handle the click
+                } else if geometry.isPointInNotch(location) {
+                    // Clicking the notch itself → expand to full chat
                     peekTimer?.cancel()
                     peekTimer = nil
                     contentType = .chat(session)

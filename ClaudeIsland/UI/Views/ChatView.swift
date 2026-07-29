@@ -849,7 +849,7 @@ struct ToolCallView: View {
 
     /// Whether the tool can be expanded (has result, NOT Task tools, NOT Edit tools)
     private var canExpand: Bool {
-        tool.name != "Task" && tool.name != "Edit" && hasResult
+        !SubagentState.isSpawnTool(tool.name) && tool.name != "Edit" && hasResult
     }
 
     private var showContent: Bool {
@@ -884,7 +884,7 @@ struct ToolCallView: View {
                     .foregroundColor(textColor)
                     .fixedSize()
 
-                if tool.name == "Task" && !tool.subagentTools.isEmpty {
+                if SubagentState.isSpawnTool(tool.name) && !tool.subagentTools.isEmpty {
                     let taskDesc = tool.input["description"] ?? "Running agent..."
                     Text("\(taskDesc) (\(tool.subagentTools.count) tools)")
                         .font(.system(size: 11))
@@ -925,7 +925,7 @@ struct ToolCallView: View {
             }
 
             // Subtitle: input preview (file path, command, pattern)
-            if !tool.inputPreview.isEmpty && tool.name != "Task" && tool.name != "AgentOutputTool" {
+            if !tool.inputPreview.isEmpty && !SubagentState.isSpawnTool(tool.name) && tool.name != "AgentOutputTool" {
                 HStack(spacing: 4) {
                     Text("└")
                         .font(.system(size: 10))
@@ -940,7 +940,7 @@ struct ToolCallView: View {
             }
 
             // Subagent tools list (for Task tools)
-            if tool.name == "Task" && !tool.subagentTools.isEmpty {
+            if SubagentState.isSpawnTool(tool.name) && !tool.subagentTools.isEmpty {
                 SubagentToolsList(tools: tool.subagentTools)
                     .padding(.leading, 12)
                     .padding(.top, 2)
@@ -948,7 +948,7 @@ struct ToolCallView: View {
 
             // Result content (Edit always shows, others when expanded)
             // Edit tools bypass hasResult check - fallback in ToolResultContent renders from input params
-            if showContent && tool.status != .running && tool.name != "Task" && (hasResult || tool.name == "Edit") {
+            if showContent && tool.status != .running && !SubagentState.isSpawnTool(tool.name) && (hasResult || tool.name == "Edit") {
                 ToolResultContent(tool: tool)
                     .padding(.leading, 12)
                     .padding(.top, 4)

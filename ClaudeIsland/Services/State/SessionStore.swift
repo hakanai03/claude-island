@@ -119,8 +119,9 @@ actor SessionStore {
         let isNewSession = sessions[sessionId] == nil
         var session = sessions[sessionId] ?? createSession(from: event)
 
+        let oldPid = session.pid
         session.pid = event.pid
-        if let pid = event.pid {
+        if let pid = event.pid, pid != oldPid {
             let tree = ProcessTreeBuilder.shared.buildTree()
             session.isInTmux = ProcessTreeBuilder.shared.isInTmux(pid: pid, tree: tree)
         }
@@ -148,7 +149,28 @@ actor SessionStore {
             return
         }
 
-        let newPhase = event.determinePhase()
+        // Record local tool activity for permission-notification dedup
+        if event.event == "PreToolUse" || event.event == "PermissionRequest",
+           let toolName = event.tool {
+            let now = Date()
+            session.recentToolNameActivity[toolName] = now
+            session.recentToolNameActivity = session.recentToolNameActivity.filter {
+                now.timeIntervalSince($0.value) < 600
+            }
+        }
+
+        let newPhase: SessionPhase
+        if isDuplicatePermissionNotification(event, session: session) {
+            // Claude Code re-announces unanswered permissions via a delayed Notification
+            // hook. For local sessions the socket-based PermissionRequest already owns the
+            // UI (and may already be resolved), so treating the late notification as a new
+            // permission would pop a stale peek. Only teammate-forwarded prompts — which
+            // have no matching local tool activity — should create a permission here.
+            Self.logger.debug("Ignoring duplicate permission notification for \(sessionId.prefix(8), privacy: .public)")
+            newPhase = session.phase
+        } else {
+            newPhase = event.determinePhase()
+        }
 
         if session.phase.canTransition(to: newPhase) {
             session.phase = newPhase
@@ -169,11 +191,33 @@ actor SessionStore {
         }
 
         sessions[sessionId] = session
-        publishState()
 
         if event.shouldSyncFile {
             scheduleFileSync(sessionId: sessionId, cwd: event.cwd)
         }
+    }
+
+    /// Whether a permission_prompt Notification duplicates a permission already handled
+    /// via the socket-based PermissionRequest flow (pending, or recently seen locally).
+    private func isDuplicatePermissionNotification(_ event: HookEvent, session: SessionState) -> Bool {
+        guard event.event == "Notification",
+              event.notificationType == "permission_prompt" else { return false }
+        if session.phase.isWaitingForApproval { return true }
+        let now = Date()
+        if let name = event.tool ?? event.notificationToolName {
+            if let lastSeen = session.recentToolNameActivity[name],
+               now.timeIntervalSince(lastSeen) < 90 {
+                return true
+            }
+        } else {
+            // No tool name in the message (e.g. bare "Claude needs your permission"):
+            // if this session has any recent local tool activity, the socket flow
+            // already handled the underlying permission — treat as a re-announcement.
+            if session.recentToolNameActivity.values.contains(where: { now.timeIntervalSince($0) < 90 }) {
+                return true
+            }
+        }
+        return false
     }
 
     private func createSession(from event: HookEvent) -> SessionState {
@@ -197,7 +241,7 @@ actor SessionStore {
 
                 // Skip creating top-level placeholder for subagent tools
                 // They'll appear under their parent Task instead
-                let isSubagentTool = session.subagentState.hasActiveSubagent && toolName != "Task"
+                let isSubagentTool = session.subagentState.hasActiveSubagent && !SubagentState.isSpawnTool(toolName)
                 if isSubagentTool {
                     return
                 }
@@ -262,14 +306,14 @@ actor SessionStore {
     private func processSubagentTracking(event: HookEvent, session: inout SessionState) {
         switch event.event {
         case "PreToolUse":
-            if event.tool == "Task", let toolUseId = event.toolUseId {
+            if SubagentState.isSpawnTool(event.tool), let toolUseId = event.toolUseId {
                 let description = event.toolInput?["description"]?.value as? String
                 session.subagentState.startTask(taskToolId: toolUseId, description: description)
                 Self.logger.debug("Started Task subagent tracking: \(toolUseId.prefix(12), privacy: .public)")
             }
 
         case "PostToolUse":
-            if event.tool == "Task" {
+            if SubagentState.isSpawnTool(event.tool) {
                 Self.logger.debug("PostToolUse for Task received (subagent still running)")
             }
 
@@ -395,28 +439,26 @@ actor SessionStore {
             }
         }
 
-        // Update session phase if needed
-        // If the completed tool was the one in the phase context, switch to next pending or processing
-        if case .waitingForApproval(let ctx) = session.phase, ctx.toolUseId == toolUseId {
-            if let nextPending = findNextPendingTool(in: session, excluding: toolUseId) {
-                let newPhase = SessionPhase.waitingForApproval(PermissionContext(
-                    toolUseId: nextPending.id,
-                    toolName: nextPending.name,
-                    toolInput: nil,
-                    message: nil,
-                    receivedAt: nextPending.timestamp,
-                    hasAlwaysOption: false
-                ))
-                session.phase = newPhase
-                Self.logger.debug("Switched to next pending tool after completion: \(nextPending.id.prefix(12), privacy: .public)")
-            } else {
-                if session.phase.canTransition(to: .processing) {
-                    session.phase = .processing
-                }
-            }
-        }
+        advancePhaseAfterToolCompletion(session: &session, completedToolId: toolUseId)
 
         sessions[sessionId] = session
+    }
+
+    /// Advance phase after a tool completes: switch to next pending tool or transition to processing.
+    private func advancePhaseAfterToolCompletion(session: inout SessionState, completedToolId: String) {
+        guard case .waitingForApproval(let ctx) = session.phase, ctx.toolUseId == completedToolId else { return }
+        if let nextPending = findNextPendingTool(in: session, excluding: completedToolId) {
+            session.phase = .waitingForApproval(PermissionContext(
+                toolUseId: nextPending.id,
+                toolName: nextPending.name,
+                toolInput: nil,
+                message: nil,
+                receivedAt: nextPending.timestamp,
+                hasAlwaysOption: false
+            ))
+        } else if session.phase.canTransition(to: .processing) {
+            session.phase = .processing
+        }
     }
 
     /// Find the next tool waiting for approval (excluding a specific tool ID)
@@ -507,11 +549,8 @@ actor SessionStore {
     private func processFileUpdate(_ payload: FileUpdatePayload) async {
         guard var session = sessions[payload.sessionId] else { return }
 
-        // Update conversationInfo from JSONL (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: payload.sessionId,
-            cwd: session.cwd
-        )
+        // Update conversationInfo from incremental state (no file I/O)
+        let conversationInfo = await ConversationParser.shared.conversationInfo(for: payload.sessionId)
         session.conversationInfo = conversationInfo
 
         // Handle /clear reconciliation - remove items that no longer exist in parser state
@@ -640,15 +679,16 @@ actor SessionStore {
             structuredResults: payload.structuredResults
         )
 
-        sessions[payload.sessionId] = session
-
-        await emitToolCompletionEvents(
-            sessionId: payload.sessionId,
-            session: session,
+        applyToolCompletions(
+            session: &session,
             completedToolIds: payload.completedToolIds,
             toolResults: payload.toolResults,
             structuredResults: payload.structuredResults
         )
+
+        trimChatItems(session: &session)
+
+        sessions[payload.sessionId] = session
     }
 
     /// Populate subagent tools for Task tools using their agent JSONL files
@@ -659,7 +699,7 @@ actor SessionStore {
     ) async {
         for i in 0..<session.chatItems.count {
             guard case .toolCall(var tool) = session.chatItems[i].type,
-                  tool.name == "Task",
+                  SubagentState.isSpawnTool(tool.name),
                   let structuredResult = structuredResults[session.chatItems[i].id],
                   case .task(let taskResult) = structuredResult,
                   !taskResult.agentId.isEmpty else { continue }
@@ -701,14 +741,13 @@ actor SessionStore {
         }
     }
 
-    /// Emit toolCompleted events for tools that have results in JSONL but aren't marked complete yet
-    private func emitToolCompletionEvents(
-        sessionId: String,
-        session: SessionState,
+    /// Apply tool completions directly to session (avoids recursive process() calls and N+1 publishState)
+    private func applyToolCompletions(
+        session: inout SessionState,
         completedToolIds: Set<String>,
         toolResults: [String: ConversationParser.ToolResult],
         structuredResults: [String: ToolResultData]
-    ) async {
+    ) {
         // Get the active permission's tool ID so we can skip it —
         // permission lifecycle is managed by approve/deny/socketFailure events, not JSONL detection
         let activePermissionToolId: String?
@@ -718,23 +757,34 @@ actor SessionStore {
             activePermissionToolId = nil
         }
 
-        for item in session.chatItems {
-            guard case .toolCall(let tool) = item.type else { continue }
+        for i in 0..<session.chatItems.count {
+            guard case .toolCall(var tool) = session.chatItems[i].type else { continue }
+            let itemId = session.chatItems[i].id
 
             // Skip the active permission tool — its completion is handled by the permission system
-            if item.id == activePermissionToolId { continue }
+            if itemId == activePermissionToolId { continue }
 
-            // Only emit for tools that are running or waiting but have results in JSONL
+            // Only process tools that are running or waiting but have results in JSONL
             guard tool.status == .running || tool.status == .waitingForApproval else { continue }
-            guard completedToolIds.contains(item.id) else { continue }
+            guard completedToolIds.contains(itemId) else { continue }
 
             let result = ToolCompletionResult.from(
-                parserResult: toolResults[item.id],
-                structuredResult: structuredResults[item.id]
+                parserResult: toolResults[itemId],
+                structuredResult: structuredResults[itemId]
             )
 
-            // Process the completion event (this will update state and phase consistently)
-            await process(.toolCompleted(sessionId: sessionId, toolUseId: item.id, result: result))
+            // Update tool status inline (same logic as processToolCompleted)
+            tool.status = result.status
+            tool.result = result.result
+            tool.structuredResult = result.structuredResult
+            session.chatItems[i] = ChatHistoryItem(
+                id: itemId,
+                type: .toolCall(tool),
+                timestamp: session.chatItems[i].timestamp
+            )
+            Self.logger.debug("Tool \(itemId.prefix(12), privacy: .public) completed with status: \(String(describing: result.status), privacy: .public)")
+
+            advancePhaseAfterToolCompletion(session: &session, completedToolId: itemId)
         }
     }
 
@@ -824,6 +874,39 @@ actor SessionStore {
         }
     }
 
+    // MARK: - Chat Items Trimming
+
+    /// Maximum number of chat items to keep per session
+    private static let maxChatItems = 500
+
+    /// Trim chat items to prevent unbounded growth.
+    /// Preserves running/waitingForApproval tools regardless of limit.
+    private func trimChatItems(session: inout SessionState) {
+        guard session.chatItems.count > Self.maxChatItems else { return }
+
+        // Collect indices of active tools that must be preserved
+        var activeIndices = Set<Int>()
+        for i in 0..<session.chatItems.count {
+            if case .toolCall(let tool) = session.chatItems[i].type,
+               tool.status == .running || tool.status == .waitingForApproval {
+                activeIndices.insert(i)
+            }
+        }
+
+        // Keep the most recent items + any active tools from the trimmed portion
+        let trimCount = session.chatItems.count - Self.maxChatItems
+        var preserved: [ChatHistoryItem] = []
+        for i in 0..<trimCount {
+            if activeIndices.contains(i) {
+                preserved.append(session.chatItems[i])
+            }
+        }
+
+        session.chatItems = preserved + Array(session.chatItems.suffix(Self.maxChatItems))
+        let trimmedCount = session.chatItems.count
+        Self.logger.debug("Trimmed chatItems to \(trimmedCount) items")
+    }
+
     // MARK: - Interrupt Processing
 
     private func processInterrupt(sessionId: String) async {
@@ -895,11 +978,8 @@ actor SessionStore {
         let toolResults = await ConversationParser.shared.toolResults(for: sessionId)
         let structuredResults = await ConversationParser.shared.structuredResults(for: sessionId)
 
-        // Also parse conversationInfo (summary, lastMessage, etc.)
-        let conversationInfo = await ConversationParser.shared.parse(
-            sessionId: sessionId,
-            cwd: cwd
-        )
+        // Build conversationInfo from incremental state (no extra file I/O)
+        let conversationInfo = await ConversationParser.shared.conversationInfo(for: sessionId)
 
         // Process loaded history
         await process(.historyLoaded(

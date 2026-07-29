@@ -5,7 +5,6 @@
 //  Header bar for the dynamic island
 //
 
-import Combine
 import SwiftUI
 
 struct ClaudeCrabIcon: View {
@@ -13,10 +12,7 @@ struct ClaudeCrabIcon: View {
     let color: Color
     var animateLegs: Bool = false
 
-    @State private var legPhase: Int = 0
-
-    // Timer for leg animation
-    private let legTimer = Timer.publish(every: 0.15, on: .main, in: .common).autoconnect()
+    private let interval: TimeInterval = 0.15
 
     init(size: CGFloat = 16, color: Color = Color(red: 0.85, green: 0.47, blue: 0.34), animateLegs: Bool = false) {
         self.size = size
@@ -25,6 +21,16 @@ struct ClaudeCrabIcon: View {
     }
 
     var body: some View {
+        TimelineView(.animation(minimumInterval: interval, paused: !animateLegs)) { timeline in
+            let legPhase = animateLegs
+                ? Int(timeline.date.timeIntervalSinceReferenceDate / interval) % 4
+                : 0
+
+            crabCanvas(legPhase: legPhase)
+        }
+    }
+
+    private func crabCanvas(legPhase: Int) -> some View {
         Canvas { context, canvasSize in
             let scale = size / 52.0  // Original viewBox height is 52
             let xOffset = (canvasSize.width - 66 * scale) / 2
@@ -84,11 +90,6 @@ struct ClaudeCrabIcon: View {
             context.fill(rightEye, with: .color(.black))
         }
         .frame(width: size * (66.0 / 52.0), height: size)
-        .onReceive(legTimer) { _ in
-            if animateLegs {
-                legPhase = (legPhase + 1) % 4
-            }
-        }
     }
 }
 

@@ -55,6 +55,11 @@ class NotchWindowController: NSWindowController {
 
         super.init(window: notchWindow)
 
+        // Keep the panel clickable after pass-through reposts while it is open
+        notchWindow.shouldAcceptMouseEvents = { [weak viewModel] in
+            viewModel?.status == .opened
+        }
+
         // Create the SwiftUI view with pass-through hosting
         let hostingController = NotchViewController(viewModel: viewModel)
         notchWindow.contentViewController = hostingController

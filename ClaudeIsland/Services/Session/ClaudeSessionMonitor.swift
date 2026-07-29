@@ -9,9 +9,12 @@
 import AppKit
 import Combine
 import Foundation
+import os.log
 
 @MainActor
 class ClaudeSessionMonitor: ObservableObject {
+    static let logger = Logger(subsystem: "com.claudeisland", category: "SessionMonitor")
+
     @Published var instances: [SessionState] = []
     @Published var pendingInstances: [SessionState] = []
 
@@ -193,11 +196,17 @@ class ClaudeSessionMonitor: ObservableObject {
             )
 
             // 2. After delay, type answer into terminal
-            guard let tty = session.tty else { return }
+            guard let tty = session.tty else {
+                Self.logger.error("answerQuestion: no tty for session \(sessionId.prefix(8), privacy: .public) — cannot type answer")
+                return
+            }
             try? await Task.sleep(for: .milliseconds(500))
 
-            // Resolve tmux target once
-            let tmuxTarget: TmuxTarget? = session.isInTmux ? await Self.findTmuxTarget(tty: tty) : nil
+            // Resolve tmux target from the pane tty directly — more reliable than the
+            // process-ancestry isInTmux flag (hook wrapper pids can be short-lived)
+            let tmuxTarget: TmuxTarget? = await Self.findTmuxTarget(tty: tty)
+            let usingTmux = tmuxTarget != nil
+            Self.logger.debug("answerQuestion: tty=\(tty, privacy: .public) isInTmux=\(session.isInTmux, privacy: .public) tmuxTarget=\(tmuxTarget?.targetString ?? "nil", privacy: .public)")
 
             // Split by newline for multi-part answers (e.g., "Other" option: "3\ncustom text")
             let parts = answer.components(separatedBy: "\n")
@@ -206,13 +215,16 @@ class ClaudeSessionMonitor: ObservableObject {
                 if index > 0 {
                     try? await Task.sleep(for: .milliseconds(300))
                 }
-                _ = await ToolApprovalHandler.shared.sendMessageWithFallback(
+                let sent = await ToolApprovalHandler.shared.sendMessageWithFallback(
                     part,
                     tty: tty,
-                    isInTmux: session.isInTmux,
+                    isInTmux: usingTmux,
                     pid: session.pid,
                     tmuxTarget: tmuxTarget
                 )
+                if !sent {
+                    Self.logger.error("answerQuestion: failed to send \"\(part, privacy: .public)\" to terminal (usingTmux=\(usingTmux, privacy: .public))")
+                }
             }
         }
     }

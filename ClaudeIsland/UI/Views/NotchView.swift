@@ -8,6 +8,7 @@
 import AppKit
 import CoreGraphics
 import SwiftUI
+import os.log
 
 // Corner radius constants
 private let cornerRadiusInsets = (
@@ -235,9 +236,10 @@ struct NotchView: View {
         .onChange(of: sessionMonitor.pendingInstances) { _, sessions in
             handlePendingSessionsChange(sessions)
         }
-        .onChange(of: sessionMonitor.instances) { _, instances in
+        .onChange(of: sessionMonitor.instances) { oldInstances, instances in
             handleProcessingChange()
             handleWaitingForInputChange(instances)
+            handlePermissionResolved(old: oldInstances, new: instances)
         }
         .onChange(of: expansionWidth) { _, newWidth in
             viewModel.closedExpansionWidth = newWidth
@@ -545,7 +547,7 @@ struct NotchView: View {
             recentlyCompactedIds.subtract(newWaitingIds)
 
             // Debounce: wait 3s and verify sessions are still waiting
-            // (SubagentStop/PostToolUse can cause transient waitingForInput that lasts 1-2s)
+            // (hook event ordering can cause transient waitingForInput that lasts 1-2s)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [self] in
                 notifyIfMainAgentDone(
                     capturedNewWaitingIds: capturedNewWaitingIds,
@@ -562,6 +564,27 @@ struct NotchView: View {
         }
 
         previousWaitingForInputIds = currentIds
+    }
+
+    private func handlePermissionResolved(old: [SessionState], new: [SessionState]) {
+        guard viewModel.status == .opened else { return }
+
+        // Identify the session currently displayed in the notch
+        let targetSessionId: String?
+        switch viewModel.contentType {
+        case .peek(let session): targetSessionId = session.sessionId
+        case .chat(let session): targetSessionId = session.sessionId
+        default: targetSessionId = nil
+        }
+        guard let sessionId = targetSessionId else { return }
+
+        // Detect phase transition from waitingForApproval to something else
+        let wasWaiting = old.first { $0.sessionId == sessionId }?.phase.isWaitingForApproval ?? false
+        let isWaiting = new.first { $0.sessionId == sessionId }?.phase.isWaitingForApproval ?? false
+
+        if wasWaiting && !isWaiting {
+            viewModel.notchClose()
+        }
     }
 
     /// Notify when main agent is done, deferring if team-mode subagent sessions are still active.

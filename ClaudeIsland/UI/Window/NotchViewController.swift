@@ -13,6 +13,11 @@ import SwiftUI
 class PassThroughHostingView<Content: View>: NSHostingView<Content> {
     var hitTestRect: () -> CGRect = { .zero }
 
+    /// Deliver the first click even when the panel is not key.
+    /// Peek opens without activating the app (openReason == .notification),
+    /// so without this the initial click is swallowed by window activation.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Only accept hits within the panel rect
         guard hitTestRect().contains(point) else {

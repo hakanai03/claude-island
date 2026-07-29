@@ -68,6 +68,7 @@ actor ProcessExecutor: ProcessExecuting {
     }
 
     /// Run a command asynchronously and return a full Result with exit code and stderr
+    /// Uses terminationHandler to avoid blocking the cooperative thread pool
     func runWithResult(_ executable: String, arguments: [String]) async -> Result<ProcessResult, ProcessExecutorError> {
         await withCheckedContinuation { continuation in
             let process = Process()
@@ -79,10 +80,7 @@ actor ProcessExecutor: ProcessExecuting {
             process.standardOutput = stdoutPipe
             process.standardError = stderrPipe
 
-            do {
-                try process.run()
-                process.waitUntilExit()
-
+            process.terminationHandler = { terminatedProcess in
                 let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
                 let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
@@ -91,20 +89,24 @@ actor ProcessExecutor: ProcessExecuting {
 
                 let result = ProcessResult(
                     output: stdout,
-                    exitCode: process.terminationStatus,
+                    exitCode: terminatedProcess.terminationStatus,
                     stderr: stderr
                 )
 
-                if process.terminationStatus == 0 {
+                if terminatedProcess.terminationStatus == 0 {
                     continuation.resume(returning: .success(result))
                 } else {
-                    Self.logger.warning("Command failed: \(executable) \(arguments.joined(separator: " "), privacy: .public) - exit code \(process.terminationStatus)")
+                    Self.logger.warning("Command failed: \(executable) \(arguments.joined(separator: " "), privacy: .public) - exit code \(terminatedProcess.terminationStatus)")
                     continuation.resume(returning: .failure(.executionFailed(
                         command: executable,
-                        exitCode: process.terminationStatus,
+                        exitCode: terminatedProcess.terminationStatus,
                         stderr: stderr
                     )))
                 }
+            }
+
+            do {
+                try process.run()
             } catch let error as NSError {
                 if error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
                     Self.logger.error("Command not found: \(executable, privacy: .public)")

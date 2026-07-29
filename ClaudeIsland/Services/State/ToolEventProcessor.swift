@@ -66,7 +66,7 @@ enum ToolEventProcessor {
     ) {
         guard let toolUseId = event.toolUseId else { return }
 
-        if event.tool == "Task" {
+        if SubagentState.isSpawnTool(event.tool) {
             session.subagentState.startTask(taskToolId: toolUseId)
             logger.debug("Started Task subagent tracking: \(toolUseId.prefix(12), privacy: .public)")
         } else if let toolName = event.tool, session.subagentState.hasActiveSubagent {
@@ -90,7 +90,7 @@ enum ToolEventProcessor {
     ) {
         guard let toolUseId = event.toolUseId else { return }
 
-        if event.tool == "Task" {
+        if SubagentState.isSpawnTool(event.tool) {
             if let taskContext = session.subagentState.activeTasks[toolUseId] {
                 logger.debug("Task completing with \(taskContext.subagentTools.count) subagent tools")
                 attachSubagentToolsToTask(

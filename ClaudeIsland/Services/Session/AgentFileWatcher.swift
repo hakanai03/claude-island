@@ -30,7 +30,9 @@ class AgentFileWatcher {
     private let filePath: String
     private let queue = DispatchQueue(label: "com.claudeisland.agentfilewatcher", qos: .userInitiated)
 
-    /// Track seen tool IDs to avoid duplicates
+    /// Incrementally accumulated tool state
+    private var knownTools: [SubagentToolInfo] = []
+    private var completedToolIds: Set<String> = []
     private var seenToolIds: Set<String> = []
 
     weak var delegate: AgentFileWatcherDelegate?
@@ -42,14 +44,12 @@ class AgentFileWatcher {
         self.cwd = cwd
         self.storedTranscriptPath = transcriptPath
 
-        if let transcriptPath {
-            let dir = (transcriptPath as NSString).deletingLastPathComponent
-            self.filePath = dir + "/agent-" + agentId + ".jsonl"
-        } else {
-            let projectDir = cwd.replacingOccurrences(of: "/", with: "-")
-                                .replacingOccurrences(of: ".", with: "-")
-            self.filePath = NSHomeDirectory() + "/.claude/projects/" + projectDir + "/agent-" + agentId + ".jsonl"
-        }
+        self.filePath = ConversationParser.agentFilePath(
+            agentId: agentId,
+            sessionId: sessionId,
+            transcriptPath: transcriptPath,
+            cwd: cwd
+        )
     }
 
     /// Start watching the agent file
@@ -70,14 +70,8 @@ class AgentFileWatcher {
 
         fileHandle = handle
         lastOffset = 0
+        // Initial full parse from offset 0; parseTools() updates lastOffset
         parseTools()
-
-        do {
-            lastOffset = try handle.seekToEnd()
-        } catch {
-            logger.error("Failed to seek to end: \(error.localizedDescription, privacy: .public)")
-            return
-        }
 
         let fd = handle.fileDescriptor
         let newSource = DispatchSource.makeFileSystemObjectSource(
@@ -101,15 +95,108 @@ class AgentFileWatcher {
         logger.debug("Started watching agent file: \(self.agentId.prefix(8), privacy: .public) for task: \(self.taskToolId.prefix(12), privacy: .public)")
     }
 
+    /// Parse tools incrementally from lastOffset, only reading new bytes
     private func parseTools() {
-        let tools = ConversationParser.parseSubagentToolsSync(agentId: agentId, cwd: cwd, transcriptPath: storedTranscriptPath)
+        guard let handle = fileHandle else { return }
 
-        let newTools = tools.filter { !seenToolIds.contains($0.id) }
-        guard !newTools.isEmpty || tools.count != seenToolIds.count else { return }
+        let currentOffset: UInt64
+        do {
+            currentOffset = try handle.seekToEnd()
+        } catch {
+            return
+        }
 
-        seenToolIds = Set(tools.map { $0.id })
-        logger.debug("Agent \(self.agentId.prefix(8), privacy: .public) has \(tools.count) tools")
+        guard currentOffset > lastOffset else { return }
 
+        do {
+            try handle.seek(toOffset: lastOffset)
+        } catch {
+            return
+        }
+
+        let newData = handle.readData(ofLength: Int(currentOffset - lastOffset))
+        lastOffset = currentOffset
+
+        guard let newContent = String(data: newData, encoding: .utf8), !newContent.isEmpty else { return }
+
+        var changed = false
+
+        for line in newContent.components(separatedBy: "\n") where !line.isEmpty {
+            // Check for tool_result lines
+            if line.contains("\"tool_result\""),
+               let lineData = line.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+               let messageDict = json["message"] as? [String: Any],
+               let contentArray = messageDict["content"] as? [[String: Any]] {
+                for block in contentArray {
+                    if block["type"] as? String == "tool_result",
+                       let toolUseId = block["tool_use_id"] as? String,
+                       !completedToolIds.contains(toolUseId) {
+                        completedToolIds.insert(toolUseId)
+                        // Update existing tool's completion status
+                        if let idx = knownTools.firstIndex(where: { $0.id == toolUseId }) {
+                            knownTools[idx] = SubagentToolInfo(
+                                id: knownTools[idx].id,
+                                name: knownTools[idx].name,
+                                input: knownTools[idx].input,
+                                isCompleted: true,
+                                timestamp: knownTools[idx].timestamp
+                            )
+                            changed = true
+                        }
+                    }
+                }
+            }
+
+            // Check for tool_use lines
+            if line.contains("\"tool_use\""),
+               let lineData = line.data(using: .utf8),
+               let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+               let messageDict = json["message"] as? [String: Any],
+               let contentArray = messageDict["content"] as? [[String: Any]] {
+                for block in contentArray {
+                    guard block["type"] as? String == "tool_use",
+                          let toolId = block["id"] as? String,
+                          let toolName = block["name"] as? String,
+                          !seenToolIds.contains(toolId) else {
+                        continue
+                    }
+
+                    seenToolIds.insert(toolId)
+
+                    var input: [String: String] = [:]
+                    if let inputDict = block["input"] as? [String: Any] {
+                        for (key, value) in inputDict {
+                            if let strValue = value as? String {
+                                input[key] = strValue
+                            } else if let intValue = value as? Int {
+                                input[key] = String(intValue)
+                            } else if let boolValue = value as? Bool {
+                                input[key] = boolValue ? "true" : "false"
+                            }
+                        }
+                    }
+
+                    let isCompleted = completedToolIds.contains(toolId)
+                    let timestamp = json["timestamp"] as? String
+
+                    knownTools.append(SubagentToolInfo(
+                        id: toolId,
+                        name: toolName,
+                        input: input,
+                        isCompleted: isCompleted,
+                        timestamp: timestamp
+                    ))
+                    changed = true
+                }
+            }
+        }
+
+        guard changed else { return }
+
+        logger.debug("Agent \(self.agentId.prefix(8), privacy: .public) has \(self.knownTools.count) tools")
+
+        let tools = knownTools
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.delegate?.didUpdateAgentTools(
