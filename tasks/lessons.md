@@ -30,6 +30,21 @@
 - **UI検証はユーザーとの対話ループが最速**: AskUserQuestion自体をテストベンチにして
   「押してみて→ログ確認→修正→再テスト」を回した。os_logの計測ログは終わったら消す。
 
+## 2026-07-29 (続々): ウインドウ作り直しと無人UI検証
+
+- **オーバーサイズ透明ウインドウは負債の親**: 「全画面幅ウインドウ+クリック素通り細工」を選ぶと
+  repost/ignoresMouseEvents/カスタムhitTestの3点セットが芋づるで必要になる。
+  ウインドウを見た目にフィットさせれば全部消える。
+- **SwiftUIのButtonは`.frame(maxWidth: .infinity)`だけでは全域タップ不可** —
+  透明領域は `.contentShape(Rectangle())` が要る。
+- **無人UI検証の型**: ①偽hookイベント注入で状態を作る → ②CGWindowListでウインドウ実フレームを
+  検証 → ③DEBUG限定フック（Distributed Notification → アプリ内NSEvent合成 → window.sendEvent）で
+  クリックを実経路に流す → ④socket応答/フレーム変化で判定。アクセシビリティ権限不要。
+  ツール一式: scripts/uitest/（README あり）。
+- CGEvent での外部からの合成クリックは Accessibility 権限がないと**無言で捨てられる**
+  （エラーも出ない）。カーソル位置の変化で効いているか必ず確認する。
+- probe座標は数pxでフレークする。グリッドで撃って成功条件（socket応答/フレーム変化）で判定する。
+
 ## 環境の罠
 
 - ユーザーのシェルプロファイルに `log` 関数があり `/usr/bin/log` を隠す → unified log操作はフルパスで。

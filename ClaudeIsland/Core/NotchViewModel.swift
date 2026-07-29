@@ -131,14 +131,6 @@ class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Whether we're in chat mode (sticky behavior)
-    private var isInChatMode: Bool {
-        switch contentType {
-        case .chat, .peek: return true
-        default: return false
-        }
-    }
-
     /// The chat session we're viewing (persists across close/open)
     private var currentChatSession: SessionState?
 
