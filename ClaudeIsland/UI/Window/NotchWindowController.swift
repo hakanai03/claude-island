@@ -131,6 +131,56 @@ class NotchWindowController: NSWindowController {
                 self.viewModel.notchClose()
             case "open":
                 self.viewModel.notchOpen(reason: .click)
+            case "dumptree":
+                let pid = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
+                let tree = ProcessTreeBuilder.shared.buildTree()
+                var out = "tree size: \(tree.count)\n"
+                var current = pid
+                var depth = 0
+                while current > 1 && depth < 20 {
+                    guard let info = tree[current] else { out += "MISSING \(current)\n"; break }
+                    out += "\(info.pid) ppid=\(info.ppid) tty=\(info.tty ?? "nil") cmd=\(info.command)\n"
+                    current = info.ppid
+                    depth += 1
+                }
+                out += "isInTmux=\(ProcessTreeBuilder.shared.isInTmux(pid: pid, tree: tree)) "
+                out += "hasClaudeAncestor=\(ProcessTreeBuilder.shared.hasClaudeAncestor(pid: pid, tree: tree))\n"
+                try? out.write(toFile: "/tmp/claude-island-tree.txt", atomically: true, encoding: .utf8)
+            case "dumpsessions":
+                Task { @MainActor in
+                    var out = ""
+                    for s in await SessionStore.shared.allSessions() {
+                        out += "id=\(s.sessionId.prefix(8)) tty=\(s.tty ?? "nil") pid=\(s.pid.map(String.init) ?? "nil") "
+                        out += "phase=\(String(describing: s.phase).prefix(30)) headless=\(s.isHeadless) subagent=\(s.isSubagent) "
+                        out += "tmux=\(s.isInTmux) cwd=\(s.cwd) title=\(s.displayTitle.prefix(40))\n"
+                    }
+                    try? out.write(toFile: "/tmp/claude-island-sessions.txt", atomically: true, encoding: .utf8)
+                }
+            case "dumphistory":
+                let prefix = parts.count > 1 ? String(parts[1]) : ""
+                Task { @MainActor in
+                    if !ChatHistoryManager.shared.histories.keys.contains(where: { $0.hasPrefix(prefix) }),
+                       let s = await SessionStore.shared.allSessions().first(where: { $0.sessionId.hasPrefix(prefix) }) {
+                        await ChatHistoryManager.shared.loadFromFile(sessionId: s.sessionId, cwd: s.cwd)
+                    }
+                    let all = ChatHistoryManager.shared.histories
+                    guard let (sid, items) = all.first(where: { $0.key.hasPrefix(prefix) }) else {
+                        try? "no session matching \(prefix)".write(toFile: "/tmp/claude-island-history.txt", atomically: true, encoding: .utf8)
+                        return
+                    }
+                    var out = "session \(sid): \(items.count) items\n"
+                    for it in items.suffix(40) {
+                        switch it.type {
+                        case .user(let t): out += "USER: \(t.prefix(60))\n"
+                        case .assistant(let t): out += "ASSISTANT: \(t.prefix(60))\n"
+                        case .thinking(let t): out += "THINKING: \(t.prefix(40))\n"
+                        case .interrupted: out += "INTERRUPTED\n"
+                        case .toolCall(let t):
+                            out += "TOOL name=[\(t.name)] status=\(t.status) preview=[\(t.inputPreview.prefix(40))] subtools=\(t.subagentTools.count)\n"
+                        }
+                    }
+                    try? out.write(toFile: "/tmp/claude-island-history.txt", atomically: true, encoding: .utf8)
+                }
             default:
                 break
             }

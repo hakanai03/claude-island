@@ -121,9 +121,12 @@ actor SessionStore {
 
         let oldPid = session.pid
         session.pid = event.pid
-        if let pid = event.pid, pid != oldPid {
+        // createSession seeds pid from the event, so a plain pid-change check
+        // never fires for new sessions — include isNewSession explicitly
+        if let pid = event.pid, pid != oldPid || isNewSession {
             let tree = ProcessTreeBuilder.shared.buildTree()
             session.isInTmux = ProcessTreeBuilder.shared.isInTmux(pid: pid, tree: tree)
+            session.isChildSession = ProcessTreeBuilder.shared.hasClaudeAncestor(pid: pid, tree: tree)
         }
         if let tty = event.tty {
             session.tty = tty.replacingOccurrences(of: "/dev/", with: "")
@@ -842,6 +845,8 @@ actor SessionStore {
             )
 
         case .thinking(let text):
+            // Redacted thinking has empty text — don't create a blank row
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             let itemId = "\(message.id)-thinking-\(blockIndex)"
             guard !existingIds.contains(itemId) else { return nil }
             return ChatHistoryItem(id: itemId, type: .thinking(text), timestamp: message.timestamp)

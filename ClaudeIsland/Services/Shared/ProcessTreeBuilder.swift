@@ -71,6 +71,27 @@ struct ProcessTreeBuilder: Sendable {
         return false
     }
 
+    /// Whether a process has another claude CLI in its ancestor chain.
+    /// True for sessions spawned BY a claude session (background batches,
+    /// skill-spawned children) — the user never converses with those.
+    /// User-launched sessions ascend to a shell/terminal/tmux instead.
+    nonisolated func hasClaudeAncestor(pid: Int, tree: [Int: ProcessInfo]) -> Bool {
+        var current = tree[pid]?.ppid ?? 0
+        var depth = 0
+
+        while current > 1 && depth < 20 {
+            guard let info = tree[current] else { break }
+            let base = (info.command as NSString).lastPathComponent.lowercased()
+            if base == "claude" {
+                return true
+            }
+            current = info.ppid
+            depth += 1
+        }
+
+        return false
+    }
+
     /// Walk up the process tree to find the terminal app PID
     nonisolated func findTerminalPid(forProcess pid: Int, tree: [Int: ProcessInfo]) -> Int? {
         var current = pid

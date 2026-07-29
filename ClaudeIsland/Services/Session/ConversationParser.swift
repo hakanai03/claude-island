@@ -288,9 +288,14 @@ actor ConversationParser {
 
     /// Truncate message for display
     /// Whether a user message is slash-command / system markup rather than real
-    /// user text. Covers <command-name> (old) and <command-message> (current).
+    /// user text. Covers <command-name> (old), <command-message> (current),
+    /// and system-injected turns like task notifications and reminders.
     nonisolated static func isCommandMarkup(_ content: String) -> Bool {
-        content.hasPrefix("<command-") || content.hasPrefix("<local-command") || content.hasPrefix("Caveat:")
+        content.hasPrefix("<command-")
+            || content.hasPrefix("<local-command")
+            || content.hasPrefix("<task-notification")
+            || content.hasPrefix("<system-reminder")
+            || content.hasPrefix("Caveat:")
     }
 
     private static func truncateMessage(_ message: String?, maxLength: Int = 80) -> String? {
@@ -662,7 +667,10 @@ actor ConversationParser {
                             blocks.append(.toolUse(toolBlock))
                         }
                     case "thinking":
-                        if let thinking = block["thinking"] as? String {
+                        // Redacted/encrypted thinking (e.g. Fable models) has empty
+                        // text — skip it or it renders as a blank row
+                        if let thinking = block["thinking"] as? String,
+                           !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             blocks.append(.thinking(thinking))
                         }
                     default:

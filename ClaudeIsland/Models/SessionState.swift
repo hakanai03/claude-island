@@ -152,12 +152,17 @@ struct SessionState: Equatable, Identifiable, Sendable {
         conversationInfo.teammateName
     }
 
-    /// Whether this is a headless (non-interactive) session — e.g. `claude -p`
-    /// children spawned by skills like review-pr. Interactive sessions always
-    /// have a pty; headless ones have none. The user never converses with
-    /// these, so they are hidden from the conversation list and muted.
+    /// Whether another claude CLI appears in this session's process ancestry
+    /// (set from the process tree when the pid is learned)
+    var isChildSession: Bool = false
+
+    /// Whether this is a non-interactive session the user never converses
+    /// with — e.g. `claude -p` children spawned by skills or background
+    /// batches. Detected by a missing pty OR a claude process in the
+    /// ancestry (background children may still get a pty). Hidden from the
+    /// conversation list and muted.
     var isHeadless: Bool {
-        tty == nil
+        tty == nil || isChildSession
     }
 
     /// Home directory path (cached for thread safety)
