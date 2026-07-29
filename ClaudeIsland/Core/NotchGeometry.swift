@@ -2,53 +2,17 @@
 //  NotchGeometry.swift
 //  ClaudeIsland
 //
-//  Geometry calculations for the notch
+//  Geometry constants for the notch
 //
 
 import CoreGraphics
 import Foundation
 
-/// Pure geometry calculations for the notch
+/// Static geometry facts about the notch and screen.
+/// Hit-testing is handled by AppKit now that the window is sized to its
+/// content, so this only carries layout inputs.
 struct NotchGeometry: Sendable {
     let deviceNotchRect: CGRect
     let screenRect: CGRect
     let windowHeight: CGFloat
-
-    /// The notch rect in screen coordinates (for hit testing with global mouse position)
-    var notchScreenRect: CGRect {
-        CGRect(
-            x: screenRect.midX - deviceNotchRect.width / 2,
-            y: screenRect.maxY - deviceNotchRect.height,
-            width: deviceNotchRect.width,
-            height: deviceNotchRect.height
-        )
-    }
-
-    /// The opened panel rect in screen coordinates for a given size
-    func openedScreenRect(for size: CGSize) -> CGRect {
-        // Match the actual rendered panel size (tuned to match visual output)
-        let width = size.width - 6
-        let height = size.height - 30
-        return CGRect(
-            x: screenRect.midX - width / 2,
-            y: screenRect.maxY - height,
-            width: width,
-            height: height
-        )
-    }
-
-    /// Check if a point is in the notch area (with padding for easier interaction)
-    func isPointInNotch(_ point: CGPoint) -> Bool {
-        notchScreenRect.insetBy(dx: -10, dy: -5).contains(point)
-    }
-
-    /// Check if a point is in the opened panel area
-    func isPointInOpenedPanel(_ point: CGPoint, size: CGSize) -> Bool {
-        openedScreenRect(for: size).contains(point)
-    }
-
-    /// Check if a point is outside the opened panel (for closing)
-    func isPointOutsidePanel(_ point: CGPoint, size: CGSize) -> Bool {
-        !openedScreenRect(for: size).contains(point)
-    }
 }

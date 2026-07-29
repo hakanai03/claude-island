@@ -2,7 +2,11 @@
 //  EventMonitors.swift
 //  ClaudeIsland
 //
-//  Singleton that aggregates all event monitors
+//  Singleton that aggregates all event monitors.
+//  Only a mouseDown monitor remains: hover is handled by SwiftUI (.onHover)
+//  now that the window is sized to its content, and clicks inside the window
+//  go through normal AppKit dispatch. This monitor exists solely to close the
+//  opened panel when the user clicks outside the window.
 //
 
 import AppKit
@@ -11,37 +15,22 @@ import Combine
 class EventMonitors {
     static let shared = EventMonitors()
 
-    let mouseLocation = CurrentValueSubject<CGPoint, Never>(.zero)
     let mouseDown = PassthroughSubject<NSEvent, Never>()
 
-    private var mouseMoveMonitor: EventMonitor?
     private var mouseDownMonitor: EventMonitor?
-    private var mouseDraggedMonitor: EventMonitor?
 
     private init() {
         setupMonitors()
     }
 
     private func setupMonitors() {
-        mouseMoveMonitor = EventMonitor(mask: .mouseMoved) { [weak self] _ in
-            self?.mouseLocation.send(NSEvent.mouseLocation)
-        }
-        mouseMoveMonitor?.start()
-
         mouseDownMonitor = EventMonitor(mask: .leftMouseDown) { [weak self] event in
             self?.mouseDown.send(event)
         }
         mouseDownMonitor?.start()
-
-        mouseDraggedMonitor = EventMonitor(mask: .leftMouseDragged) { [weak self] _ in
-            self?.mouseLocation.send(NSEvent.mouseLocation)
-        }
-        mouseDraggedMonitor?.start()
     }
 
     deinit {
-        mouseMoveMonitor?.stop()
         mouseDownMonitor?.stop()
-        mouseDraggedMonitor?.stop()
     }
 }

@@ -212,6 +212,8 @@ struct NotchView: View {
                         withAnimation(.spring(response: 0.38, dampingFraction: 0.8)) {
                             isHovering = hovering
                         }
+                        // Drives the 1s hover-to-open timer
+                        viewModel.handleHover(hovering)
                     }
                     .onTapGesture {
                         if viewModel.status != .opened {
@@ -263,6 +265,20 @@ struct NotchView: View {
             // Header row - always present, contains crab and spinner that persist across states
             headerRow
                 .frame(height: max(24, closedNotchSize.height))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    // Clicking the notch strip while opened: peek expands to chat,
+                    // chat stays (sticky), other content closes
+                    guard viewModel.status == .opened else { return }
+                    switch viewModel.contentType {
+                    case .peek:
+                        viewModel.expandPeekToChat()
+                    case .chat:
+                        break
+                    default:
+                        viewModel.notchClose()
+                    }
+                }
 
             // Main content only when opened
             if viewModel.status == .opened {
@@ -667,6 +683,7 @@ struct NotchView: View {
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 

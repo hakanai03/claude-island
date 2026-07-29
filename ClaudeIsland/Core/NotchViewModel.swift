@@ -102,7 +102,6 @@ class NotchViewModel: ObservableObject {
     // MARK: - Private
 
     private var cancellables = Set<AnyCancellable>()
-    private let events = EventMonitors.shared
     private var hoverTimer: DispatchWorkItem?
     private var peekTimer: DispatchWorkItem?
 
@@ -115,7 +114,6 @@ class NotchViewModel: ObservableObject {
             windowHeight: windowHeight
         )
         self.hasPhysicalNotch = hasPhysicalNotch
-        setupEventHandlers()
         observeSelectors()
     }
 
@@ -133,24 +131,6 @@ class NotchViewModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    // MARK: - Event Handling
-
-    private func setupEventHandlers() {
-        events.mouseLocation
-            .throttle(for: .milliseconds(50), scheduler: DispatchQueue.main, latest: true)
-            .sink { [weak self] location in
-                self?.handleMouseMove(location)
-            }
-            .store(in: &cancellables)
-
-        events.mouseDown
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.handleMouseDown()
-            }
-            .store(in: &cancellables)
-    }
-
     /// Whether we're in chat mode (sticky behavior)
     private var isInChatMode: Bool {
         switch contentType {
@@ -162,112 +142,22 @@ class NotchViewModel: ObservableObject {
     /// The chat session we're viewing (persists across close/open)
     private var currentChatSession: SessionState?
 
-    /// Check if a point is in the expanded closed activity area
-    private func isPointInClosedExpansion(_ point: CGPoint) -> Bool {
-        guard closedExpansionWidth > 0 else { return false }
-        let notchRect = geometry.notchScreenRect
-        let totalWidth = notchRect.width + closedExpansionWidth
-        let expandedRect = CGRect(
-            x: notchRect.midX - totalWidth / 2,
-            y: notchRect.minY,
-            width: totalWidth,
-            height: notchRect.height
-        ).insetBy(dx: -10, dy: -5)
-        return expandedRect.contains(point)
-    }
+    /// Hover state driven by the SwiftUI view (.onHover on the notch content).
+    /// Auto-expands after 1 second of hovering while closed.
+    func handleHover(_ hovering: Bool) {
+        isHovering = hovering
 
-    private func handleMouseMove(_ location: CGPoint) {
-        let inNotch = geometry.isPointInNotch(location) || isPointInClosedExpansion(location)
-        let inOpened = status == .opened && geometry.isPointInOpenedPanel(location, size: openedSize)
-
-        let newHovering = inNotch || inOpened
-
-        // Only update if changed to prevent unnecessary re-renders
-        guard newHovering != isHovering else { return }
-
-        isHovering = newHovering
-
-        // Cancel any pending hover timer
         hoverTimer?.cancel()
         hoverTimer = nil
 
-        // Start hover timer to auto-expand after 1 second
-        if isHovering && (status == .closed || status == .popping) {
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self = self, self.isHovering else { return }
-                self.notchOpen(reason: .hover)
-            }
-            hoverTimer = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+        guard hovering, status == .closed || status == .popping else { return }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self = self, self.isHovering else { return }
+            self.notchOpen(reason: .hover)
         }
-    }
-
-    private func handleMouseDown() {
-        let location = NSEvent.mouseLocation
-
-        switch status {
-        case .opened:
-            if case .peek(let session) = contentType {
-                // Peek mode: clicks inside the panel are handled by its own controls
-                // (option chips, question text) — intercepting them here on mouseDown
-                // would destroy the buttons before their mouseUp fires.
-                if geometry.isPointInOpenedPanel(location, size: openedSize) {
-                    // Let SwiftUI buttons inside the peek handle the click
-                } else if geometry.isPointInNotch(location) {
-                    // Clicking the notch itself → expand to full chat
-                    peekTimer?.cancel()
-                    peekTimer = nil
-                    contentType = .chat(session)
-                } else {
-                    notchClose()
-                    repostClickAt(location)
-                }
-            } else if geometry.isPointOutsidePanel(location, size: openedSize) {
-                notchClose()
-                // Re-post the click so it reaches the window/app behind us
-                repostClickAt(location)
-            } else if geometry.notchScreenRect.contains(location) {
-                // Clicking notch while opened - only close if NOT in chat mode
-                if !isInChatMode {
-                    notchClose()
-                }
-            }
-        case .closed, .popping:
-            if geometry.isPointInNotch(location) || isPointInClosedExpansion(location) {
-                notchOpen(reason: .click)
-            }
-        }
-    }
-
-    /// Re-posts a mouse click at the given screen location so it reaches windows behind us
-    private func repostClickAt(_ location: CGPoint) {
-        // Small delay to let the window's ignoresMouseEvents update
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            // Convert to CGEvent coordinate system (screen coordinates with Y from top-left)
-            guard let screen = NSScreen.main else { return }
-            let screenHeight = screen.frame.height
-            let cgPoint = CGPoint(x: location.x, y: screenHeight - location.y)
-
-            // Create and post mouse down event
-            if let mouseDown = CGEvent(
-                mouseEventSource: nil,
-                mouseType: .leftMouseDown,
-                mouseCursorPosition: cgPoint,
-                mouseButton: .left
-            ) {
-                mouseDown.post(tap: .cghidEventTap)
-            }
-
-            // Create and post mouse up event
-            if let mouseUp = CGEvent(
-                mouseEventSource: nil,
-                mouseType: .leftMouseUp,
-                mouseCursorPosition: cgPoint,
-                mouseButton: .left
-            ) {
-                mouseUp.post(tap: .cghidEventTap)
-            }
-        }
+        hoverTimer = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
     }
 
     // MARK: - Actions
@@ -336,6 +226,14 @@ class NotchViewModel: ObservableObject {
         }
         peekTimer = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
+    }
+
+    /// Expand a peek to the full chat view for the same session
+    func expandPeekToChat() {
+        guard case .peek(let session) = contentType else { return }
+        peekTimer?.cancel()
+        peekTimer = nil
+        contentType = .chat(session)
     }
 
     func showChat(for session: SessionState) {

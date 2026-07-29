@@ -29,6 +29,8 @@
 - [ ] AskUserQuestion: 質問終了後の ? アイコン / thinking animation が残る問題（保留）
 - [ ] AskUserQuestion: 過去の回答履歴表示
 - [ ] multiSelect 対応（複数選択 AskUserQuestion）
+- [ ] AskUserQuestion 複数質問対応: parse が questions.first のみ。island には1問目しか出ず、
+  チップ回答も1問目にしか効かない（CLIのReview/Submit画面も未考慮）
 
 ## バグ
 
