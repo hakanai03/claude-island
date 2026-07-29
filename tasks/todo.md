@@ -66,8 +66,12 @@
 - [ ] AskUserQuestion: 質問終了後の ? アイコン / thinking animation が残る問題（保留）
 - [ ] AskUserQuestion: 過去の回答履歴表示
 - [ ] multiSelect 対応（複数選択 AskUserQuestion）
-- [ ] AskUserQuestion 複数質問対応: parse が questions.first のみ。island には1問目しか出ず、
-  チップ回答も1問目にしか効かない（CLIのReview/Submit画面も未考慮）
+- [x] AskUserQuestion 複数質問対応（b7a8421）: チップでq1→q2とローカル収集→最後に番号列を
+  まとめて送出（Enterなし）→ 700ms後にペインを読んで Review画面なら "1" 追送でSubmit
+  - ⚠️ 脆弱性メモ: CLIのTUI仕様に依存（数字=選択+次へ/最後で自動Submit、"Ready to submit"文言、
+    Enterは次質問のデフォルト確定）。CCアップデートで壊れたら tmux実験（lessons.md参照）で
+    プロトコル再採取。壊れ方は安全側（追送されない/チップ無反応のみ、誤送信はしない）
+  - 残: multiSelect質問（数字がトグルで進まない）は1問目のみ対応。chat側AskUserQuestionBarも単一質問のまま
 
 ## バグ
 
